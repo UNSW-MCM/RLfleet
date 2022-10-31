@@ -1,0 +1,13 @@
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - scikit-learn
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  - spyder
+  - notebook
+  - gym
+  - pytorch
