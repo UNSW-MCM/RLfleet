@@ -1,13 +1,10 @@
 # Module containing the fleet environment and all its associated methods/functions
-
 """
-Created by Kilian Vos from University of New South Wales
+Created on Wed Oct  6 15:27:42 2021
 
-2022
-
+@author: Kilian Vos
 """
 
-# load packages
 import os
 import numpy as np
 from datetime import datetime, timedelta
@@ -27,37 +24,19 @@ import shutil
 # Pytorch
 import torch
 from torch.autograd import Variable
+import time
 
 #%% 1. Degradation model
 
 def degradation_model(ds,nt,a_max,seed=0,C=[],levels=0):
     
-    """
-    Plots degradation paths using the model.
+    # inputs to degradation model
+    # ds = stress range in MPa, depends on manoeuvre
+    # nt = number of trajectories
+    # a_max = maximum crack length allowable in mm
+    # seed = random seed to draw the C values
+    # C = values of C already provided (by default draw randomly)
     
-    KV UNSW 2022
-    
-    Arguments:
-    -----------
-        ds: float
-            stress range in MPa, depends on manoeuvre
-        nt: int
-            number of trajectories
-        a_max: float
-            maximum crack length allowable in mm
-        seed: int
-            random seed to draw the C values
-        C: array
-            values of C if already provided (if empty drawn randomly)
-    Returns:
-    -----------
-        N:
-        N_min:
-        a:
-        C:
-        fig: figure
-    """
-
     # constants for Paris Law (identified from Virkler dataset)
     b = 76.2/1000               # body width converted to metres
     m = 2.9                     # Paris exponent
@@ -109,7 +88,6 @@ def degradation_model(ds,nt,a_max,seed=0,C=[],levels=0):
     label = 'Nmin    = %d,000 cycles\nNmax   = %d,000 cycles\nNmean = %d,000 cycles'%(np.min(N[-1,:])/1000,
                                                                                       np.max(N[-1,:])/1000,
                                                                                       np.mean(N[-1,:])/1000)
-    # make figure
     fig,ax = plt.subplots(2,1,figsize=[9.37, 7.78],tight_layout=True,sharex=True,
                           gridspec_kw={'height_ratios':[1,4],'hspace':0})
     ax[0].grid(which='both',ls=':',c='0.5',lw=1)
@@ -132,12 +110,12 @@ def degradation_model(ds,nt,a_max,seed=0,C=[],levels=0):
     else:
         ax[1].axhline(y=a_initial,lw=2,ls='--',c='k')
         ax[1].axhline(y=a_max,lw=2,ls='-',c='k')
-        colors = sns.color_palette('Pastel1',len(C)) 
+        colors = sns.color_palette('Dark2',len(C)) 
         for i in range(len(C)):
             ax[1].plot(N[:,i],a*1000,c=colors[i],ls='-',lw=2,
                        label='tail #%d'%(i+1))
     ax[1].legend(loc='center left',frameon=True)
-    # plot discretisation of damage bins
+    
     if levels > 0:
         cmap = plt.get_cmap('YlOrRd',levels)
         colors = [cmap(_) for _ in np.linspace(0,1,levels)]
@@ -152,7 +130,6 @@ def degradation_model(ds,nt,a_max,seed=0,C=[],levels=0):
 
 # Paris law to propagate the crack length
 def propagate_crack(a0,period,ds,C,f0,b=76.2/1000,m=2.9):
-    "function to propagate the crack with Paris' Law"
     a_increment = f0*period*(C*(ds*np.sqrt(np.pi*a0/np.cos(np.pi*a0/(2*b))))**m)
     a_new = a0 + a_increment
     return a_new
@@ -165,24 +142,27 @@ class Env(gym.Env):
     Description:
         An environment to simulate the operation of a fleet of aircrafts.
         Each day, a set of missions are prescribed to a fleet of aircrafts.
-        The agent can choose for each aircraft to assign a mission, standby or preventive maintenance.
-        Corrective maintenance is automatically applied when the aircraft reaches the critical crack length.
-        The goal is to maximise the availability of the fleet, which is the rate of mission completion over N years.
+        The agent can choose for each aircraft to assign a mission, standby or maintenance.
+        Maintenance is automatically applied when the aircraft reaches the critical crack length.
+        The goal is to maximise the availability of the fleet, which is the rate of mission completion over 20 years.
 
     Observation space:
         - damage status of each tail number [9mm to 38.1mm]
         - maintenance status of each tail number [number of days of maintenance remaining, 0 if available]
         - prescribed missions for the day [number of missions of each type to complete at each timestep]
     Actions:
-        - fly one mission [M1, M2, M3, M4, M5]
+        - fly one of n missions [M1, M2, M_n]
         - standby
-        - preventive maintenance (costs 10 and is not available for 5 days)
+        - preventive maintenance
     Rewards:
-        The reward is +1 for M1, +2 for M2, ... +5 for M5, 
-        -10 for preventive and -100 for corrective maintenance
+        The reward is +1 for M1, +2 for M2, +n for M_n 
+        -10 for preventive maintenance
+        -100 for corrective maintenance
                         
+    Starting State:
+        Multiple groups of aircrafts with different service history
     Episode Termination:
-        after N years of operation
+        after 5 years of operation (2018 to 2023)
         
     """
 
@@ -250,13 +230,14 @@ class Env(gym.Env):
         self.actions = list(self.missions.keys()) + ['SB'] + ['MT']
         self.action_space = spaces.Discrete(n_actions**self.n_tail)
         action_list = list(np.arange(len(self.actions)))
-        self.possible_actions = [p for p in itertools.product(action_list, repeat=self.n_tail)]
+        # create variable with all possible actions
+        self.possible_actions = np.array([p for p in itertools.product(action_list, repeat=self.n_tail)])
 
         # environment timestep (episode ends after N timesteps)
         self.timestep = 0
         
         # colormaps 
-        self.color_groups = sns.color_palette('Pastel1',len(self.group_tail)) 
+        self.color_groups = sns.color_palette('Dark2',len(self.group_tail)) 
         self.color_actions = list(sns.color_palette('tab10',len(self.actions)))
         # assign white color to stand-by action
         self.color_actions[len(self.missions)] = (1,1,1)  
@@ -268,7 +249,9 @@ class Env(gym.Env):
         
         # create mission profile (creates self.dates and self.mission_per_date)
         self.create_mission_profile(params,verbose)
-                        
+        mission_keys = ['missions_per_day','mission_composition','date_start','date_end']
+        self.mission_params = {key: params[key] for key in mission_keys}
+
         # States (damage status, maintenance status, prescribed missions,selection)
         # initialise vector
         self.state = np.empty(2*self.n_tail+len(self.missions),dtype=int)
@@ -315,10 +298,9 @@ class Env(gym.Env):
             print('Number of possible states: %d'%((self.dlevels-1)**self.n_tail))
 
     def step(self, action):
-        "function to step in the environment"
         # check that action is legal
-        actions_possible, idx_possible = get_possible_actions(self.state,self)
-        if tuple(action) not in actions_possible:
+        idx_possible = get_possible_actions(self.state,self)
+        if tuple(action) not in self.possible_actions[idx_possible]:
             raise Exception('Illegal action was chosen')    
             
         # read state variables
@@ -438,8 +420,7 @@ class Env(gym.Env):
         
         return np.array(self.state), total_reward, done
             
-    def reset(self):
-        "function to reset the environment"
+    def reset(self,regenerate_missions=False):
         self.timestep = 0
         # re-initialise variables to store evaluation metrics
         self.availability = np.nan*np.ones(len(self.dates))
@@ -448,6 +429,9 @@ class Env(gym.Env):
         self.n_corr_maintenance = list(np.zeros(self.n_tail,dtype=int))
         self.cumulated_damage = np.zeros(self.n_tail)
         self.cumulated_stress = np.zeros(self.n_tail)
+        # other temporary variables
+        self.temp_action = np.nan*np.ones([len(self.dates),self.n_tail])
+        self.temp_reward = np.nan*np.ones([len(self.dates),self.n_tail]) 
         # States (damage status, maintenance status, prescribed missions,selection)
         # initialise vector
         self.state = np.empty(2*self.n_tail+len(self.missions),dtype=int)
@@ -460,9 +444,11 @@ class Env(gym.Env):
         self.state[self.n_tail:2*self.n_tail] = np.zeros(self.n_tail,dtype=int)
         # add mission_todo from the prescribed list
         self.state[2*self.n_tail:2*self.n_tail+len(self.missions)] = self.missions_per_date[self.timestep]
+        if regenerate_missions:
+            # create mission profile (creates self.dates and self.mission_per_date)
+            self.create_mission_profile(self.mission_params)
         
     def encode_state(self,damage,status,missions_todo):
-        "function to encode the state variables into a single vector"
         state = np.empty(2*self.n_tail+len(self.missions),dtype=int)
         state[:self.n_tail] = damage
         state[self.n_tail:2*self.n_tail]   = status 
@@ -471,7 +457,6 @@ class Env(gym.Env):
         return state
     
     def decode_state(self, state):
-        "function to decode the state vector into individual variables"
         damage = state[:self.n_tail]
         status = state[self.n_tail:2*self.n_tail]  
         missions_todo = state[2*self.n_tail:2*self.n_tail+len(self.missions)]        
@@ -479,7 +464,7 @@ class Env(gym.Env):
         return damage, status, missions_todo
 
     def fleet_status(self):
-        "function to plot the status of the fleet at any given time"
+        
         damage, status, missions_todo = self.decode_state(self.state)
         
         # setup figure
@@ -514,13 +499,13 @@ class Env(gym.Env):
             ax[0,0].text(k,self.crack_lengths[k]+1,'%d'%status[k],ha='center',fontsize=10)
         ax[0,0].axhline(y=self.a0*1000,lw=1.5,ls='--',c='g')
         ax[0,0].axhline(y=self.amax*1000,lw=1.5,ls='--',c='r')
-        ax[0,0].legend(loc='lower right',ncol=6,fontsize=10,
-                       labelspacing=0.2,columnspacing=0.2)
+        # ax[0,0].legend(loc='lower right',ncol=6,fontsize=10,
+        #                labelspacing=0.2,columnspacing=0.2)
         ax[0,0].set(xlabel='Tail numbers',ylabel='crack length [mm]',
                title='Fleet status at timestep: %d'%self.timestep,
                ylim=[self.a0*1000-5,self.amax*1000+3])
 
-        if self.timestep > 0 :
+        if self.timestep > 0:
             
             # plot mission profile for the day
             mission_profile = self.missions_per_date[self.timestep-1]
@@ -557,7 +542,7 @@ class Env(gym.Env):
             elif self.reward_scheme == 'damage-based': ylim[1] = 11
             title = 'Actions / Rewards at timestep %d : '%(self.timestep-1)
             title += 'total rewards = %d  -  '%np.nansum(self.temp_reward[self.timestep-1,:])
-            # title += 'availability = %.1f%%'%(self.availability[self.timestep-1])
+            title += 'availability = %.1f%%'%(self.availability[self.timestep-1])
             ax[1,0].set(ylabel='rewards',xlabel='Tail numbers',ylim=ylim,title=title,
                         xlim=ax[0,0].get_xlim(),xticks=np.arange(self.n_tail))
             handles = []
@@ -565,13 +550,16 @@ class Env(gym.Env):
                 handles.append(mpatches.Patch(fc=self.color_actions[k],ec='k',label=key))
             ax[1,0].legend(handles=handles,loc='center left',fontsize=9,
                             handlelength=1,edgecolor='k',bbox_to_anchor=[1,0.5])
+            
+            ax[0,0].set_xticklabels([str(_) for _ in np.arange(1,self.n_tail+1)])
+            ax[1,0].set_xticklabels([str(_) for _ in np.arange(1,self.n_tail+1)])
 
             # plot time-series
             ax[2,0].plot(self.dates[:self.timestep],np.nansum(self.temp_reward[:self.timestep,:],axis=1),'C0-',lw=1)
             title = 'Total cumulated rewards: %d  , '%np.sum(np.nansum(self.temp_reward,axis=1))
             title += 'completion rate = %.1f%%'%np.nanmean(self.availability)
-            ax[2,0].set(ylabel='rewards',title=title,ylim=[-20,5])
-
+            ax[2,0].set(ylabel='rewards',title=title,ylim=[-20,20])
+    
             twinx = ax[2,0].twinx()
             twinx.plot(self.dates,self.availability,'C1-',ms=3,alpha=0.5)
             twinx.set(ylabel='fleet availability [%]',ylim = [-10,110])
@@ -585,13 +573,20 @@ class Env(gym.Env):
             # plot number of missions completed
             ax[1,1].set(xlabel='Tail numbers')
             ax[1,1].grid(which='both',ls=':',lw=0.5,c='0.5')
-            for k in range(self.n_tail):
-                ax[1,1].bar(k+1,self.flown_missions[k],ec='k',fc='C0',alpha=0.75)
+            for i in range(self.n_tail):
+                # print('Tail %d'%(i+1))
+                bottom = 0
+                for k,key in enumerate(list(self.actions)):
+                    sum_mission = sum(self.temp_action[:,i] == k)
+                    # print('%s = %03d'%(key,sum_mission))
+                    ax[1,1].bar(i+1,sum_mission,bottom=bottom,
+                                ec='k',fc=self.color_actions[k],alpha=0.75)
+                    bottom += sum_mission
             sum_flown = np.sum(self.flown_missions)
             sum_total = np.sum(np.sum(self.missions_per_date,axis=0))
             prc = 100*sum_flown/sum_total
-            ax[1,1].set(title='Total = %d (%d%%, out of %d)'%(sum_flown,prc,sum_total),
-                        ylim=[np.min(self.flown_missions)*0.9,ax[1,1].get_ylim()[1]])
+            ax[1,1].set(title='Total = %d (%d%%, out of %d)'%(sum_flown,prc,sum_total),)
+                        #ylim=[np.min(self.flown_missions)*0.9,ax[1,1].get_ylim()[1]])
             # twinx = ax[1,1].twinx()
             # twinx.plot(self.cumulated_damage,'ko-')
             # twinx.set(yticks=[])
@@ -603,6 +598,8 @@ class Env(gym.Env):
                 ax[2,1].bar(k+1,self.n_prev_maintenance[k],ec='k',fc='C2',alpha=0.75)
                 ax[2,1].bar(k+1,self.n_corr_maintenance[k],bottom=self.n_prev_maintenance[k],
                             ec='k',fc='C3',alpha=0.75)
+                ax[2,1].text(k+1,0.7*self.n_prev_maintenance[k],
+                             '%d'%self.n_prev_maintenance[k],ha='center')
             twinx = ax[2,1].twinx()
             twinx.plot(np.arange(1,len(self.C)+1),self.C,'ko-')
             twinx.set(yticks=[])
@@ -617,12 +614,12 @@ class Env(gym.Env):
             if self.n_tail < 10: 
                 ax[1,1].set_xticks(np.arange(1,self.n_tail+1))
                 ax[2,1].set_xticks(np.arange(1,self.n_tail+1))
-
+                            
         return fig
                                 
     def create_mission_profile(self,params,verbose=False):
-        "function to initially create the missions for the entire lifetime"
-        # generate dates
+        
+        # generate list of dates
         current_date = params['date_start']
         final_date = params['date_end']
         dates = []
@@ -632,7 +629,10 @@ class Env(gym.Env):
             if date.isoweekday() not in (6,7):
                 dates.append(date)
             date = date + timedelta(days=1)  
-        # if 'fixed', just add fix number of missions
+            
+        # 'mission_composition' can have different values which will determine how the prescribed missions are calculated
+        
+        # 'fixed', just add fix number of missions one of each type (if more missions than types duplicate them starting from the last one)
         if params['mission_composition'] == 'fixed-constant':
             n = params['missions_per_day']
             if n % len(self.missions) == 0:
@@ -648,7 +648,20 @@ class Env(gym.Env):
                         if sum_missions >= n:
                             break   
                 missions_per_date = np.tile(missions,(len(dates),1))
-        # if 'random-fixed', fixed number of missions but random composition
+        
+        # 'fixed-constant-random', same as fixed constant but chooses the extra mission randomly
+        elif params['mission_composition'] == 'fixed-constant-random':
+            n = params['missions_per_day']
+            missions_per_date = int((n/len(self.missions)))*np.ones([len(dates),len(self.missions)],dtype=int)
+            if n == len(self.missions)+1:
+                missions_add = np.zeros(missions_per_date.shape,dtype=int)
+                for i in range(missions_add.shape[0]):
+                    missions_add[i,np.random.randint(len(self.missions))] = 1
+                missions_per_date += missions_add
+            else:
+                raise Exception('This case is not handled in %s'%params['mission_composition'])
+                
+        # 'fixed-mixed', fixed number of missions but fully random composition
         elif params['mission_composition'] == 'fixed-mixed':
             missions_per_date = np.zeros([len(dates),len(self.missions)],dtype=int)
             for i in range(len(dates)):
@@ -667,7 +680,7 @@ class Env(gym.Env):
                 if tot_missions < params['missions_per_day']:
                     missions_per_date[i,mission_order[-1]] = params['missions_per_day'] - tot_missions
 
-        # if 'random', each mission type drawn from specified uniform distribution
+        # 'random', each mission type drawn from specified uniform distribution (random number of missions and random composition)
         elif params['mission_composition'] == 'random': 
             missions_per_date = np.zeros([len(dates),len(self.missions)],dtype=int)
             for i in range(len(dates)):
@@ -695,13 +708,18 @@ class Env(gym.Env):
                         break
                 if tot_missions < n_missions:
                     missions_per_date[i,mission_order[-1]] = n_missions - tot_missions
-            
             # previous code, draws the number of each mission type from a uniform distribution 
             # missions_per_date = np.zeros([len(dates),len(self.missions)])
             # mission_range = list(np.arange(params['uniform_dist'][0],params['uniform_dist'][1]+1))
             # for i in range(len(dates)):
                 # random.seed(i)
                 # missions_per_date[i,:] = random.sample(mission_range,len(self.missions))
+        
+        # manually choose the mission composition
+        elif params['mission_composition'] == 'custom':
+            missions = params['custom_missions']
+            missions_per_date = np.tile(missions,(len(dates),1))
+            
         else:
             raise Exception('invalid value for mission_composition in params')
         
@@ -715,7 +733,7 @@ class Env(gym.Env):
                                                                   self.dates[-1].strftime('%d-%m-%Y'),
                                                                   len(self.dates)))
             # make figure
-            if params['mission_composition'] in ['fixed-constant','fixed-mixed']: 
+            if params['mission_composition'] in ['fixed-constant','fixed-constant-random','fixed-mixed','custom']: 
                 fig,ax = plt.subplots(1,1,figsize=[15, 4],tight_layout=True)
                 ax.grid(which='both',ls=':',c='0.5',lw=1)
                 idx = np.arange(20)
@@ -754,7 +772,6 @@ class Env(gym.Env):
             return fig
     
     def update_fleet(self, past_missions, verbose=False):
-        "function to update the fleet based on past missions"
         damage, status, missions_todo, selection = self.decode_state(self.state)
         mission_types = list(self.missions.keys())
         # update the fleet state with the past missions
@@ -823,36 +840,38 @@ class Env(gym.Env):
                                     fc=self.color_levels[k],alpha=0.25)
                     if k < len(intervals)-1:
                         ax.axhline(y=intervals[k],ls='-',c='k',lw=0.5,alpha=0.75)
-            
+
 #%% 3. Auxiliary functions
 
 def get_possible_actions(state,env):
-    "get possible actions for any given state"
+    "get index of all possible actions for a given state (to avoid illegal actions)"
+    # start_time = time.time()
     damage, status, missions_todo = env.decode_state(state)
-    # possible actions for each tail number
-    action_comb = env.possible_actions
-    action_comb_arr = np.array(action_comb)
+    # initialise variables
+    idx_possible = np.ones(len(env.possible_actions),dtype=(bool))
+    # 2 steps to filter out the action combinations that are not possible:
+    # Step 1: if a tail is under maintenance, only keep combinations where that tail stands-by  
     standby_action = len(env.missions)
-    # remove the actions combinations that are not possible
-    idx_remove = []
-    # first remove all actions except maintenance if tail is under maintenance
-    for i in range(env.n_tail):
-        if status[i] > 0:
-            idx_remove += list(np.where(action_comb_arr[:,i] != standby_action)[0])
-    # second, remove actions where not enough missions are available
+    if np.any(status > 0):
+        idx_status = np.where(status>0)[0]
+        for i in idx_status:
+            # for each tail find the possible action combinations
+            idx = env.possible_actions[:,i] == standby_action
+            idx_possible[~idx] = False
+    # keep track of the indices
+    idx_dummy = np.where(idx_possible)[0]
+    possible_actions_dummy = env.possible_actions[idx_possible,:]
+    # Step 2: fly a mission that was not prescribed
     for i in range(len(env.missions)):
-        for k in range(len(action_comb_arr)):
-            if np.sum(action_comb_arr[k,:] == i) > missions_todo[i]:
-                idx_remove.append(k)
-    idx_all = np.arange(len(action_comb))
-    if len(idx_remove) > 0:
-        action_comb = [action_comb[_] for _ in np.arange(len(action_comb)) if _ not in idx_remove]
-        idx_possible = [_ for _ in idx_all if _ not in idx_remove]
-        
-    return action_comb, idx_possible
+        # for each presecribed mission find the possible action combinations
+        idx = ~(np.sum(possible_actions_dummy == i,axis=1) > missions_todo[i])
+        idx_possible[idx_dummy[~idx]] = False
+    # print("--- %s seconds ---" % (time.time() - start_time))
+    return np.where(idx_possible)[0]
 
 def episode_qtable(q_table,env,plot_steps=False,N=150,fp=os.getcwd()):
     "run a full episode with RL policy from q-table"
+    
     # nested function to read from the q-table
     def q(state, action=None):
         # only the damage levels go in the state
@@ -865,8 +884,8 @@ def episode_qtable(q_table,env,plot_steps=False,N=150,fp=os.getcwd()):
             return q_table[state]
         # otherwise return q-value for specified action
         else:
-            action = np.where([action == _ for _ in env.possible_actions])[0][0]
-            qval = q_table[state][action]
+            idx_action = np.where([np.all(action == _) for _ in env.possible_actions])[0][0]
+            qval = q_table[state][idx_action]
             # if q-value is a nan, return 0 instead
             if np.isnan(qval): qval = 0
             return qval
@@ -882,13 +901,14 @@ def episode_qtable(q_table,env,plot_steps=False,N=150,fp=os.getcwd()):
     while not done:
         current_state = copy.deepcopy(env.state)
         damage, status, missions_todo, = env.decode_state(current_state)
-        actions_possible, idx_possible = get_possible_actions(env.state,env)
+        idx_possible = get_possible_actions(env.state,env)
         # select argmax action amongst possible actions
         if str(current_state[:env.n_tail]) in q_table:
             predicted = q(current_state)
             predicted = predicted[idx_possible]
             # if all nans, then choose a random action
             if not np.all(np.isnan(predicted)):
+                actions_possible = env.possible_actions[idx_possible,:]
                 action = actions_possible[np.nanargmax(predicted)]
             else:
                 action = env.possible_actions[np.random.choice(idx_possible,1,replace=False)[0]]
@@ -924,7 +944,7 @@ def episode_random(env,plot_steps=False,N=150,fp=os.getcwd()):
     done = False
     while not done:
         damage, status, missions_todo, = env.decode_state(env.state)
-        actions_possible, idx_possible = get_possible_actions(env.state,env)
+        idx_possible = get_possible_actions(env.state,env)
         # choose a random action
         random_action = env.possible_actions[np.random.choice(idx_possible,1,replace=False)[0]]
         new_state, reward, done = env.step(random_action)
@@ -953,26 +973,30 @@ def episode_on_condition(env,maint_level=4,plot_steps=False,N=150,fp=os.getcwd()
     done = False
     while not done:
         damage, status, missions_todo, = env.decode_state(env.state)
-        actions_possible, idx_possible = get_possible_actions(env.state,env)
-        # remove maitenance actions
-        idx_remove = []
-        for i in range(env.n_tail):
-                idx_remove += list(np.where(np.array(actions_possible)[:,i] == maint_action)[0])
-                if status[i] == 0:
-                    idx_remove += list(np.where(np.array(actions_possible)[:,i] == standby_action)[0]) 
-        idx_possible_nomaint = [idx_possible[_] for _ in range(len(idx_possible)) if _ not in idx_remove]
-        # choose a random action amongst the non-maintenance ones
-        actions_possible_nomaint = [env.possible_actions[_] for _ in idx_possible_nomaint]
-        idx_random = np.random.choice(np.arange(len(actions_possible_nomaint)),1,replace=False)[0]
-        random_action = actions_possible_nomaint[idx_random]
-        # modify random action to apply maintenance above the threhsold
-        oncond_action = np.array(random_action)
+        idx_possible = get_possible_actions(env.state,env)
+        actions_possible = env.possible_actions[idx_possible,:]
+        # for on-condition maintenance, first remove all action combinations with maintenance
+        actions_possible = actions_possible[~np.any(actions_possible == maint_action,axis=1)]
+        # then remove all stand-by actions unless a tail number is under maintenance
+        if np.any(status == 0):
+            idx_status = np.where(status==0)[0]
+            # if there are more tails than missions, put a random one in standby
+            if len(idx_status) > np.sum(missions_todo):
+                idx_random = np.random.choice(np.arange(env.n_tail),1,replace=False)[0]
+                idx_status = np.delete(idx_status,idx_random)
+            for i in idx_status:
+                # for each tail find the possible action combinations
+                idx = actions_possible[:,i] == standby_action
+                actions_possible = actions_possible[~idx]
+        # choose a random action amongst the left ones
+        random_action = actions_possible[np.random.choice(np.arange(len(actions_possible)),1,replace=False)[0]]
+        # now, look at the damage thresholdand apply maintenance accordingly
         idx_unav = np.where(status>0)[0]
         for i in range(env.n_tail):
             if damage[i] >= maint_level and i not in idx_unav:
-                oncond_action[i] = maint_action
+                random_action[i] = maint_action
         # step
-        new_state, reward, done = env.step(oncond_action)
+        new_state, reward, done = env.step(random_action)
         damage_ts[env.timestep-1,:] = env.crack_lengths
         
         # save a figure for N steps
@@ -987,6 +1011,7 @@ def episode_on_condition(env,maint_level=4,plot_steps=False,N=150,fp=os.getcwd()
 
 def episode_force_life(env,maint_level=4,plot_steps=False,N=150,fp=os.getcwd()):
     "run a full episode with force-life management and on-condition maintenance"   
+    
     # whether to plot some steps
     if plot_steps:
         fp_steps = os.path.join(fp,'steps_forcelife')
@@ -1037,9 +1062,9 @@ def episode_force_life(env,maint_level=4,plot_steps=False,N=150,fp=os.getcwd()):
     plt.ion()
     return damage_ts, reward_ts
 
-
 def episode_equal_stress(env,maint_level=4,plot_steps=False,N=150,fp=os.getcwd()):
-    "run a full episode with equal stress management and on-condition maintenance"  
+    "run a full episode with equal stress management and on-condition maintenance" 
+    
     # whether to plot some steps
     if plot_steps:
         fp_steps = os.path.join(fp,'steps_equal_stress')
@@ -1092,6 +1117,7 @@ def episode_equal_stress(env,maint_level=4,plot_steps=False,N=150,fp=os.getcwd()
 
 def episode_model(model,env,plot_steps=False,N=150,fp=os.getcwd()):
     "run a full episode with RL model from NN weights"
+    
     # whether to plot a few steps
     if plot_steps:
         fp_steps = os.path.join(fp,'steps_NN')
@@ -1104,7 +1130,8 @@ def episode_model(model,env,plot_steps=False,N=150,fp=os.getcwd()):
         current_state = copy.deepcopy(env.state)
         damage_state = current_state[:env.n_tail]
         damage, status, missions_todo, = env.decode_state(current_state)
-        actions_possible, idx_possible = get_possible_actions(env.state,env)
+        idx_possible = get_possible_actions(env.state,env)
+        actions_possible = env.possible_actions[idx_possible,:]
         predicted = model.predict(damage_state).detach().numpy()
         predicted = predicted[idx_possible]
         action = actions_possible[np.nanargmax(predicted)]
@@ -1130,7 +1157,332 @@ def episode_model(model,env,plot_steps=False,N=150,fp=os.getcwd()):
     plt.ion()
     return damage_ts, reward_ts, state_qval
 
+def episode_qtable_split(q_table,env,env_half,plot_steps=False,N=150,fp=os.getcwd()):
+    "run a full episode with RL policy from q-table"
+    
+    # nested function to read from the q-table (linked to env_half!!!)
+    def q(state, action=None):
+        # only the damage levels go in the state
+        state = str(state[:env_half.n_tail])
+        # if state is not present in the table, add a vector of nans
+        if state not in q_table:
+            q_table[state] = np.nan*np.ones(len(env_half.possible_actions))
+        # if action is not specified return all q-values for that state
+        if action is None:
+            return q_table[state]
+        # otherwise return q-value for specified action
+        else:
+            idx_action = np.where([np.all(action == _) for _ in env_half.possible_actions])[0][0]
+            qval = q_table[state][idx_action]
+            # if q-value is a nan, return 0 instead
+            if np.isnan(qval): qval = 0
+            return qval
+    
+    # whether to plot some steps
+    if plot_steps:
+        fp_steps = os.path.join(fp,'steps_qtable')
+        if not os.path.exists(fp_steps): os.makedirs(fp_steps)
+        plt.ioff()  
+    damage_ts = np.nan*np.ones((len(env.dates),env.n_tail))
+    state_qval = {'states':[],'qvals':[]}
+    done = False
+    idx_split = int(env.n_tail/2)
+    while not done:
+        current_state = copy.deepcopy(env.state)
+        damage, status, missions_todo, = env.decode_state(current_state)
+        # split actions in 2 sets
+        damage1 = damage[:idx_split]
+        damage2 = damage[idx_split:]
+        status1 = status[:idx_split]
+        status2 = status[idx_split:]
+        
+        # split the missions
+        missions_todo1 = np.zeros(len(missions_todo),dtype=int)
+        # find one that is double
+        missions_todo1[np.where(missions_todo == 2)[0][0]] = 1
+        idx_missions_todo1 = np.random.choice(np.where(missions_todo == 1)[0],idx_split-1,replace=False)
+        for k in idx_missions_todo1: missions_todo1[k] = 1
+        missions_todo2 = missions_todo - missions_todo1
+
+        # randomly split the missions in 2 sets
+        # missions_todo1 = np.zeros(len(missions_todo),dtype=int)
+        # missions_todo_copy = copy.deepcopy(missions_todo)
+        # idx_missions = np.random.choice(len(missions_todo),len(missions_todo),replace=False)
+        # while sum(missions_todo1) < idx_split:
+        #     for idx in idx_missions:
+        #         if missions_todo_copy[idx] > 0:
+        #             m = np.random.randint(0,missions_todo_copy[idx]+1)
+        #             if sum(missions_todo1) + m <= idx_split:
+        #                 missions_todo1[idx] += m
+        #                 missions_todo_copy[idx] -= m
+        #             else:
+        #                 break
+        # missions_todo2 = missions_todo - missions_todo1
+        
+        # print(missions_todo)
+        # print(missions_todo1)
+        # print(missions_todo2)
+        if not np.all((missions_todo1 + missions_todo2) == missions_todo):
+            raise Exception('Mission splitting went wrong.')
+            
+        # get possible actions for each set
+        state1 = env_half.encode_state(damage1,status1,missions_todo1)
+        idx_possible1 = get_possible_actions(state1,env_half)
+        
+        # uncomment to check things are right
+        # predicted1 = q(state1)
+        # for k in idx_possible1:
+        #     print('%s -> %d'%(env_half.possible_actions[k],predicted1[k]))
+        # predicted1 = predicted1[idx_possible1]
+        # action_max = env_half.possible_actions[idx_possible1[np.argmax(predicted1)]]
+        # print('MAX: %s --> %d'%(action_max,np.max(predicted1)))
+        
+        state2 = env_half.encode_state(damage2,status2,missions_todo2)
+        idx_possible2 = get_possible_actions(state2,env_half)
+        
+        # find best action for each set
+        if str(damage1) in q_table:
+            predicted1 = q(state1)
+            predicted1 = predicted1[idx_possible1]
+            if not np.all(np.isnan(predicted1)):
+                actions_possible1 = env_half.possible_actions[idx_possible1,:]
+                action1 = actions_possible1[np.nanargmax(predicted1)]
+            else:
+                action1 = env_half.possible_actions[np.random.choice(idx_possible1,1,replace=False)[0]]
+        else:
+            action1 = env_half.possible_actions[np.random.choice(idx_possible1,1,replace=False)[0]]   
+        if str(damage2) in q_table:
+            predicted2 = q(damage2)
+            predicted2 = predicted2[idx_possible2]
+            if not np.all(np.isnan(predicted2)):
+                actions_possible2 = env_half.possible_actions[idx_possible2,:]
+                action2 = actions_possible2[np.nanargmax(predicted2)]
+            else:
+                action2 = env_half.possible_actions[np.random.choice(idx_possible2,1,replace=False)[0]]
+        else:
+            action2 = env_half.possible_actions[np.random.choice(idx_possible2,1,replace=False)[0]]   
+
+        # combine actions from each set
+        action = np.array(list(action1)+list(action2))
+
+        # step             
+        new_state, reward, done = env.step(action)
+        damage_ts[env.timestep-1,:] = env.crack_lengths
+        
+        # save a figure for the first N steps
+        if plot_steps:
+            if env.timestep > 0 and env.timestep <= N:
+                fig = env.fleet_status()
+                fig.savefig(os.path.join(fp_steps,'status_%04d.jpg'%env.timestep))
+                plt.close(fig)
+    reward_ts = copy.deepcopy(env.temp_reward)
+    plt.ion()
+    return damage_ts, reward_ts, state_qval
+
+def episode_qtable_split2(q_table,env,env_half,plot_steps=False,N=150,fp=os.getcwd()):
+    "run a full episode with RL policy from q-table"
+    
+    # nested function to read from the q-table
+    def q(state, action=None):
+        # only the damage levels go in the state
+        state = str(state[:env.n_tail])
+        # if state is not present in the table, add a vector of nans
+        if state not in q_table:
+            q_table[state] = np.nan*np.ones(len(env.possible_actions))
+        # if action is not specified return all q-values for that state
+        if action is None:
+            return q_table[state]
+        # otherwise return q-value for specified action
+        else:
+            idx_action = np.where([np.all(action == _) for _ in env.possible_actions])[0][0]
+            qval = q_table[state][idx_action]
+            # if q-value is a nan, return 0 instead
+            if np.isnan(qval): qval = 0
+            return qval
+    
+    # whether to plot some steps
+    if plot_steps:
+        fp_steps = os.path.join(fp,'steps_qtable')
+        if not os.path.exists(fp_steps): os.makedirs(fp_steps)
+        plt.ioff()  
+    damage_ts = np.nan*np.ones((len(env.dates),env.n_tail))
+    state_qval = {'states':[],'qvals':[]}
+    done = False
+    idx_split = int(env.n_tail/2)
+    while not done:
+        current_state = copy.deepcopy(env.state)
+        damage, status, missions_todo, = env.decode_state(current_state)
+        
+        # split state in 2 sets
+        damage1 = damage[:idx_split]
+        damage2 = damage[idx_split:]
+        status1 = status[:idx_split]
+        status2 = status[idx_split:]
+        missions_todo1 = [1,2]
+        missions_todo2 = [1,2]
+                        
+        # get possible actions for each set
+        state1 = env_half.encode_state(damage1,status1,missions_todo1)
+        idx_possible1 = get_possible_actions(state1,env_half)
+        state2 = env_half.encode_state(damage2,status2,missions_todo2)
+        idx_possible2 = get_possible_actions(state2,env_half)
+        
+        # find best action for each set
+        if str(damage1) in q_table:
+            predicted1 = q(damage1)
+            predicted1 = predicted1[idx_possible1]
+            if not np.all(np.isnan(predicted1)):
+                actions_possible1 = env_half.possible_actions[idx_possible1,:]
+                action1 = actions_possible1[np.nanargmax(predicted1)]
+            else:
+                action1 = env_half.possible_actions[np.random.choice(idx_possible1,1,replace=False)[0]]
+        else:
+            action1 = env_half.possible_actions[np.random.choice(idx_possible1,1,replace=False)[0]]   
+        if str(damage2) in q_table:
+            predicted2 = q(damage2)
+            predicted2 = predicted2[idx_possible2]
+            if not np.all(np.isnan(predicted2)):
+                actions_possible2 = env_half.possible_actions[idx_possible2,:]
+                action2 = actions_possible2[np.nanargmax(predicted2)]
+            else:
+                action2 = env_half.possible_actions[np.random.choice(idx_possible2,1,replace=False)[0]]
+        else:
+            action2 = env_half.possible_actions[np.random.choice(idx_possible2,1,replace=False)[0]]   
+
+        # combine actions from each set
+        action = np.array(list(action1)+list(action2))
+
+        # step             
+        new_state, reward, done = env.step(action)
+        damage_ts[env.timestep-1,:] = env.crack_lengths
+        
+        # save a figure for the first N steps
+        if plot_steps:
+            if env.timestep > 0 and env.timestep <= N:
+                fig = env.fleet_status()
+                fig.savefig(os.path.join(fp_steps,'status_%04d.jpg'%env.timestep))
+                plt.close(fig)
+    reward_ts = copy.deepcopy(env.temp_reward)
+    plt.ion()
+    return damage_ts, reward_ts, state_qval
+
 #%% 4. Plotting functions
+
+def plot_episode(damage_ts,reward_ts,env):
+    "plot the damage and reward evolution during an episode"
+        
+    fig,ax = plt.subplots(2,3,figsize=[17, 9],tight_layout=True,
+                          gridspec_kw={'height_ratios':[1,1],
+                                       'width_ratios':[2,1,1]})
+    ax[1,0].grid(which='both',ls=':',c='0.5',lw=1)
+    colors = env.color_groups
+    width = 1/(env.n_tail+1)
+
+    # plot discretised levels
+    if env.dlevels > 0:
+        intervals = np.linspace(env.a0*1000,env.amax*1000,env.dlevels)
+        intervals2 = np.arange(env.dlevels)+0.5
+        for k in range(0,len(intervals)):
+            ax[0,0].axhspan(ymin=intervals[k-1],ymax=intervals[k],
+                            fc=env.color_levels[k],alpha=0.25)
+            ax[0,1].axhspan(ymin=intervals2[k-1],ymax=intervals2[k],
+                            fc=env.color_levels[k],alpha=0.25)
+            ax[0,2].axhspan(ymin=intervals2[k-1],ymax=intervals2[k],
+                            fc=env.color_levels[k],alpha=0.25)
+            if k < len(intervals):
+                ax[0,0].axhline(y=intervals[k],ls='-',c='k',lw=0.5,alpha=0.75)
+                ax[0,1].axhline(y=intervals2[k],ls='-',c='k',lw=0.5,alpha=0.75)
+                ax[0,2].axhline(y=intervals2[k],ls='-',c='k',lw=0.5,alpha=0.75)
+    # plot damage [0,0]
+    damage_levels = np.searchsorted(env.dintervals,damage_ts,side='right')
+    ax[0,0].set(xlabel='time',ylabel='damage level',title='Damage history')
+    for i in range(damage_ts.shape[1]):
+        ax[0,0].plot(env.dates,damage_ts[:,i],'-',color=colors[i],label='tail #%d'%(i+1))
+        idx_maint = np.where(env.temp_action[:,i] == len(env.actions)-1)[0]-1
+        for k in idx_maint: 
+            ax[0,0].plot(env.dates[k],damage_ts[k,i],'o',color=colors[i])
+    ax[0,0].set_yticks(intervals[:-1]+np.diff(intervals)[0]/2)
+    ax[0,0].set_yticklabels(['%d'%_ for _ in np.arange(1,env.dlevels)])
+    ax[0,1].set_yticks(np.arange(1,env.dlevels))
+    ax[0,1].set_yticklabels(['%d'%_ for _ in np.arange(1,env.dlevels)])
+    ax[0,2].set_yticks(np.arange(1,env.dlevels))
+    ax[0,2].set_yticklabels(['%d'%_ for _ in np.arange(1,env.dlevels)])
+    ax[0,0].set_ylim([intervals[0],intervals[-1]])
+    ax[0,1].set_ylim([0.5,env.dlevels-0.5])
+    ax[0,2].set_ylim([0.5,env.dlevels-0.5])
+    ax[0,1].set_title('Maint. levels')
+    ax[0,2].set_title('Time at each damage level')
+    # plot maintenance levels for each tail [0,1]
+    for i in range(env.n_tail):
+        idx_maint = np.where(env.temp_action[:,i] == len(env.actions)-1)[0]-1
+        dl = damage_levels[idx_maint,i]
+        for d in np.unique(dl):
+            ax[0,1].barh(y=d+width*(i-np.ceil((env.n_tail/2-1))),width=np.sum(dl==d),
+                         fc=colors[i],ec='k',height=width)
+    # plot histogram of damage levels [0,2]
+    for i in range(env.n_tail):
+        dl = damage_levels[:,i]
+        for d in np.unique(dl):
+            ax[0,2].barh(y=d+width*(i-np.ceil((env.n_tail/2-1))),width=np.sum(dl==d),
+                         fc=colors[i],ec='k',height=width)
+    # add legends
+    handles = []
+    for k in range(env.n_tail):
+        handles.append(mpatches.Patch(fc=env.color_groups[k],ec='k',label='tail %d'%(k+1)))
+    ax[0,0].legend(handles=handles,loc='center',fontsize=11,ncol=3,
+              handlelength=1,edgecolor='k')
+    handles = []
+    for i in range(env.n_tail):
+        count_maint = sum(env.temp_action[:,i] == len(env.actions)-1)
+        handles.append(mpatches.Patch(fc=env.color_groups[i],ec='k',label='%d'%count_maint))
+    ax[0,1].legend(handles=handles,loc='center right',fontsize=11,
+              handlelength=1,edgecolor='k')
+    
+    # plot reward [1,0]
+    total_rewards = np.sum(np.nansum(env.temp_reward,axis=1))
+    for i in range(reward_ts.shape[1]):
+        ax[1,0].plot(env.dates,np.nancumsum(reward_ts[:,i]),'-',ms=4,
+                     color=colors[i],
+                     label='%d%%'%(100*np.nansum(reward_ts[:,i])/total_rewards));
+    title = 'Total cumulated rewards: %d'%total_rewards
+    ax[1,0].set(ylabel='rewards',title=title)
+    ax[1,0].legend(loc='lower right',handlelength=1,markerscale=2)
+    inset = ax[1,0].inset_axes([0.075,0.65,0.3,0.3])
+    standbys = env.temp_action == len(env.actions)-2
+    standbys = np.sum(standbys, axis=1)
+    for k in range(env.n_tail+1):
+        inset.bar(x=k,height=100*np.sum(standbys==k)/len(standbys),
+                  width=0.5,fc='0.5',ec='k') 
+    inset.set(xlabel='simul maint')
+    # plot number of missions completed [1,1]
+    for i in range(env.n_tail):
+        bottom = 0
+        for k,key in enumerate(list(env.actions)):
+            sum_mission = sum(env.temp_action[:,i] == k)
+            ax[1,1].bar(i+1,sum_mission,bottom=bottom,
+                        ec='k',fc=env.color_actions[k],alpha=0.75)
+            ax[1,1].text(i+1,bottom+sum_mission/2,
+                         '%d%%'%(100*sum_mission/len(env.dates)),
+                         va='center',ha='center',fontsize=11)
+            bottom += sum_mission
+    sum_flown = np.sum(env.flown_missions)
+    sum_total = np.sum(np.sum(env.missions_per_date,axis=0))
+    prc = 100*sum_flown/sum_total
+    ax[1,1].set(title='%d out of %d (%d%%)'%(sum_flown,sum_total,prc),
+                xlabel='Tail numbers',yticks=[])
+    # availability, C-values, cumulated damage [1,2]
+    ax[1,2].set(xlabel='Tail numbers',ylabel='Cumulated damage [mm]',
+                title='C-values and Cumulated damage')
+    for i in range(env.n_tail):
+        ax[1,2].bar(x=i+1,height=env.cumulated_damage[i],ec='k',
+                    fc=env.color_groups[i],alpha=0.75)
+    twinx = ax[1,2].twinx()
+    twinx.plot(np.arange(1,env.n_tail+1),env.C,'--o',mfc='w',c='0.25')
+    twinx.set(ylabel='C-values')
+    twinx.tick_params(axis='y', colors='0.25')
+    twinx.yaxis.label.set_color('0.25') 
+    
+    return fig
 
 def plot_damage_and_reward(damage_ts,reward_ts,env):
     "plot the damage and reward evolution during an episode"
@@ -1213,75 +1565,71 @@ def plot_eps_alpha(train_params):
     return fig, epsilons, alphas
 
 def plot_qvals(q_table,env,reward_ts):
-    "plot the qvalues as a function of damage level for each tail with a fleet of 2"
-    # visualise policy map (preferred action for each state)
-    fig,ax3 = plt.subplots(1,1,figsize=(10,8),tight_layout=True,)
-    ax3.grid(which='major',ls=':',c='k',lw=1)
-    colors = sns.color_palette('Paired',10)
-    colors_actions = [colors[0],colors[1],colors[4],colors[5]]
-    ax3.grid(which='major',ls=':',c='k',lw=1)
-    ax3.set(title='Policy map',
-            xlabel='Damage Level for tail #1',xticks=np.arange(1,env.dlevels),
-            ylabel='Damage Level for tail #2',yticks=np.arange(1,env.dlevels))
-    ax3.axis('equal')
+    "plot the qvalues as a function of damage level for each tail"
+    fig,ax = plt.subplots(1,1,figsize=(10,8),tight_layout=True,)
+    ax.grid(which='major',ls=':',c='k',lw=1)
+    ax.set(title='Policy map - total reward = %d'%(np.nansum(reward_ts)),
+           xlabel='tail #1',xticks=np.arange(1,env.dlevels),
+           ylabel='tail #2',yticks=np.arange(1,env.dlevels))
+    ax.axis('equal')
     for state in q_table:
         state_arr = np.fromstring(state[1:-1],dtype=int, sep=' ')
         best_action = np.nanargmax(q_table[state])
         action_pair = env.possible_actions[best_action]
-        ax3.plot(state_arr[0],state_arr[1],marker=11,color=colors_actions[action_pair[0]],
-                    ms=25,mec='k')
-        ax3.plot(state_arr[0],state_arr[1],marker=10,color=colors_actions[action_pair[1]],
-                    ms=25,mec='k')
+        ax.plot(state_arr[0],state_arr[1],marker=11,color='C%d'%action_pair[0],
+                   ms=25,mec='k')
+        ax.plot(state_arr[0],state_arr[1],marker=10,color='C%d'%action_pair[1],
+                   ms=25,mec='k')
     handles = []
     for k,key in enumerate(env.actions):
-        handles.append(mpatches.Patch(fc=colors_actions[k],ec='k',label=key))
-    ax3.legend(handles=handles,loc='center left',fontsize=14,
+        handles.append(mpatches.Patch(fc='C%d'%k,ec='k',label=key))
+    ax.legend(handles=handles,loc='center left',fontsize=14,
               handlelength=1,edgecolor='k',bbox_to_anchor=[1,0.5],
               title='Actions')
     return fig
 
-def plot_qvals3(q_table,env,reward_ts):
-    "plot the qvalues as a function of damage level for each tail with a fleet of 3 tail numbers"
-    colors = sns.color_palette('Paired',10)
-    colors_actions = [colors[0],colors[1],colors[4],colors[5]]
-    fig,ax = plt.subplots(3,9,figsize=(19,7.82),tight_layout=True,)
-    combinations = ([0,1,2],[0,2,1],[1,2,0])
+def plot_qvals3(q_table,env):
+    "plot the qvalues as a function of damage level for each tail when 3 tail numbers"
+    from mpl_toolkits import mplot3d
+    
+    # plot Q-table
+    colors = sns.color_palette('Blues',len(env.actions)-2)
+    color_actions = []
+    for k in range(len(env.actions)-2):
+        color_actions.append(colors[k])
+    colors = sns.color_palette('tab10',10)
+    color_actions.append(colors[2])
+    color_actions.append(colors[3])
+    handles = []
+    for k,key in enumerate(env.actions):
+        handles.append(mpatches.Patch(fc=color_actions[k],ec='k',label=key))
     states = np.arange(1,10)
-    for k in range(len(combinations)):
-        for i,sss in enumerate(states):     
-            ax[k,i].grid(which='major',ls=':',c='k',lw=1)
-            if i == 0:
-                ax[k,i].set(xlabel='tail #%d'%(combinations[k][0]+1),
-                            ylabel='tail #%d'%(combinations[k][1]+1),
-                            xticks=np.arange(1,env.dlevels),
-                            yticks=np.arange(1,env.dlevels))
-            ax[k,i].set(title='%d'%sss,xticks=[],yticks=[])
-            ax[k,i].axis('equal')
-            for s in states:
-                for ss in states:
-                    state = np.zeros(3)
-                    state[combinations[k][0]] = s
-                    state[combinations[k][1]] = ss
-                    state[combinations[k][2]] = sss
-                    state = '[%d %d %d]'%(state[0],state[1],state[2])
+    
+    figs = []
+    for k in range(env.n_tail):
+        fig = plt.figure(figsize=(14,10),tight_layout=True)
+        ax = plt.axes(projection='3d')
+        ax.set(xlabel='damage level tail #1',
+               ylabel='damage level tail #2',
+               zlabel='damage level tail #3',
+               title = 'Preferred action for tail #%d'%(k+1))
+        for i,s in enumerate(states):
+            for ii,ss in enumerate(states):
+                for iii,sss in enumerate(states): 
+                    state = '[%d %d %d]'%(s,ss,sss)
                     if not state in q_table: continue
                     if np.all(np.isnan(q_table[state])): continue
                     best_action = np.nanargmax(q_table[state])
                     action_pair = env.possible_actions[best_action]
-                    state_arr = np.fromstring(state[1:-1],dtype=int, sep=' ')
-                    ax[k,i].plot(state_arr[combinations[k][0]],state_arr[combinations[k][1]],marker=11,
-                               color=colors_actions[action_pair[combinations[k][0]]],ms=10,mec='k')
-                    ax[k,i].plot(state_arr[combinations[k][0]],state_arr[combinations[k][1]],marker=10,
-                               color=colors_actions[action_pair[combinations[k][1]]],ms=10,mec='k')                
+                    ax.scatter3D(s,ss,sss,s=50,color=color_actions[action_pair[k]],
+                                 ec='k',linewidth=0.5)
     
-    handles = []
-    for kk,key in enumerate(env.actions):
-        handles.append(mpatches.Patch(fc=colors_actions[kk],ec='k',label=key))
-    ax[-1,-1].legend(handles=handles,loc='center left',fontsize=14,
-              handlelength=1,edgecolor='k',bbox_to_anchor=[1,0.5],
-              title='Actions')
-    return fig
-
+        ax.legend(handles=handles,loc='center left',fontsize=14,
+                  handlelength=1,edgecolor='k',bbox_to_anchor=[1,0.5],
+                  title='Actions')
+        figs.append(fig)
+    return figs
+                    
 def plot_agent(model):
     "plot the model weights"
     weights = list(model.parameters())
@@ -1305,7 +1653,6 @@ def plot_agent(model):
 def train_qtable(env,q_table,train_params,fp):
     "perform Q-learning to update look-up table"
     
-    # turn off interactive plots
     plt.ioff()
 
     # nested function to read from the q-table
@@ -1320,28 +1667,31 @@ def train_qtable(env,q_table,train_params,fp):
             return q_table[state]
         # otherwise return q-value for specified action
         else:
-            action = np.where([action == _ for _ in env.possible_actions])[0][0]
-            qval = q_table[state][action]
+            idx_action = np.where([np.all(action == _) for _ in env.possible_actions])[0][0]
+            qval = q_table[state][idx_action]
             # if q-value is a nan, return 0 instead
             if np.isnan(qval): qval = 0
             return qval
     
     # create folders to store outputs
     fp_batch = os.path.join(fp,'episodes')
-    fp_loss = os.path.join(fp,'loss')
-    fp_policy = os.path.join(fp,'policy')
     fp_models = os.path.join(fp,'models')
     if not os.path.exists(fp_batch): os.makedirs(fp_batch)
-    if not os.path.exists(fp_loss): os.makedirs(fp_loss)
-    if not os.path.exists(fp_policy): os.makedirs(fp_policy)
     if not os.path.exists(fp_models): os.makedirs(fp_models)
+    # fp_loss = os.path.join(fp,'ts')
+    # fp_policy = os.path.join(fp,'policy')
+    # if not os.path.exists(fp_loss): os.makedirs(fp_loss)
+    # if not os.path.exists(fp_policy): os.makedirs(fp_policy)
     
     # read params dictionary
     n_episodes = train_params['n_episodes']
     gamma = train_params['gamma']
     crack_lengths = train_params['crack_lengths']
     step = train_params['saving_step']
-    n_decisions = train_params['n_decisions']
+    if 'n_decisions' in train_params.keys():
+        n_decisions = train_params['n_decisions']
+    else:
+        n_decisions = len(env.dates)
     # search parameters
     fig, epsilons, alphas = plot_eps_alpha(train_params)
     plt.close(fig)
@@ -1361,7 +1711,7 @@ def train_qtable(env,q_table,train_params,fp):
         alpha = alphas[n]
         
         # initial conditions
-        env.reset()
+        env.reset(regenerate_missions=True)
         # random initial conditions
         env.crack_lengths = copy.deepcopy(crack_lengths[n,:])
         damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
@@ -1372,7 +1722,8 @@ def train_qtable(env,q_table,train_params,fp):
             current_state = copy.deepcopy(env.state)
             damage, status, missions_todo = env.decode_state(env.state)
             # get possible actions
-            actions_possible, idx_possible = get_possible_actions(current_state,env)
+            idx_possible = get_possible_actions(current_state,env)
+            actions_possible = env.possible_actions[idx_possible,:]
             # draw random number
             r = np.random.rand()
             # either explore a new action
@@ -1397,7 +1748,7 @@ def train_qtable(env,q_table,train_params,fp):
                 max_future_q = reward + gamma*np.nanmax(q(new_state))
             else:
                 max_future_q = reward
-            action_idx =  np.where([action == _ for _ in env.possible_actions])[0][0]               
+            action_idx =  np.where([np.all(action == _) for _ in env.possible_actions])[0][0]               
             q(current_state)[action_idx] = q(current_state, action) + alpha*(max_future_q - q(current_state, action))
             
             # stop the episode after n_decisions
@@ -1416,30 +1767,27 @@ def train_qtable(env,q_table,train_params,fp):
         
         print('\r%d - rew %d - eps %.3f - alpha = %.3f'%(n+1,np.nansum(reward_ts),epsilon,alpha),end='')
         
-        # make some plots to show the progress
+        # plot fleet status at last timestep
         # fig = env.fleet_status()
-        # fig.savefig(os.path.join(fp_batch,'status_%d.jpg'%n))
+        # fig.savefig(os.path.join(fp_loss,'status_%d.jpg'%n))
         # plt.close(fig)
-        # plot policy map
-        # if env.n_tail == 2:
-            # fig = plot_qvals(q_table, env, reward_ts)
-            # fig.savefig(os.path.join(fp_policy,'policy_%d.jpg'%n))
-            # plt.close(fig)
-        # elif env.n_tail == 3:
-            # fig = plot_qvals3(q_table, env, reward_ts)
-            # fig.savefig(os.path.join(fp_policy,'policy_%d.jpg'%n))            
-            # plt.close(fig)
+        # plot time-series
+        fig = plot_episode(damage_ts,reward_ts,env)
+        fig.savefig(os.path.join(fp_batch,'ts_%d.jpg'%n))
+        plt.close(fig)
+        # plot qvals
+        # fig = plot_qvals(q_table, env, reward_ts)
+        # fig.savefig(os.path.join(fp_policy,'policy_%d.jpg'%n))
+        # plt.close(fig)
         
         # plot loss and reward time-series
-        fig,ax = plt.subplots(1,1,figsize=(10,5),tight_layout=True)
+        fig,ax = plt.subplots(1,1,figsize=(10,8),tight_layout=True)
         ax.grid(which='major',ls=':',c='k',lw=1)
         ax.plot(np.arange(len(reward_per_episode)),reward_per_episode,'C0o-',ms=4)
         ax.set(title='total reward per episode %d (max = %d)'%(reward_per_episode[-1],np.nanmax(reward_per_episode)),
                xlabel='episodes')
-        ax.plot(len(reward_per_episode)-1,reward_per_episode[-1],'ro',mfc='r',ms=12)
         ax.plot(np.nanargmax(reward_per_episode),np.nanmax(reward_per_episode),'ko',mfc='none')
         fig.savefig(os.path.join(fp,'loss_temp.jpg')) 
-        fig.savefig(os.path.join(fp_loss,'ts_%d.jpg'%n))
         plt.close(fig)
         
         # store Q-table
@@ -1465,27 +1813,27 @@ def train_qtable(env,q_table,train_params,fp):
     idx_max = (np.argmax(train_stats['reward'])+1)*step-1
     with open(os.path.join(fp_models,'qtable_%d.pkl'%idx_max),'rb') as f:
         q_table = pickle.load(f)
+    # save as best q_table
+    with open(os.path.join(fp,'qtable_best.pkl'),'wb') as f:
+        pickle.dump(q_table,f)
     # evaluate current model by running one episode
     env.reset()
     damage_ts, reward_ts, qvals = episode_qtable(q_table,env)
     print('qtable -> total rewards = %d'%np.nansum(reward_ts))
-    # plot fleet status at last timestep
-    fig = env.fleet_status()
-    fig.savefig(os.path.join(fp,'status_best.jpg'))
-    # plot policy map
-    if env.n_tail == 2:
-        fig = plot_qvals(q_table, env, reward_ts)
-        fig.savefig(os.path.join(fp,'policy_best.jpg'))
-    elif env.n_tail == 3:
-        fig = plot_qvals3(q_table, env, reward_ts)
-        fig.savefig(os.path.join(fp,'policy.jpg'))            
+    fig1 = env.fleet_status()
+    fig1.savefig(os.path.join(fp,'status_best.jpg'))
+    fig2 = plot_episode(damage_ts,reward_ts,env)
+    fig2.savefig(os.path.join(fp,'episode_best.jpg'))
+    # plot policy
+    # fig = plot_qvals(q_table, env, reward_ts)
+    # fig.savefig(os.path.join(fp,'ts_best.jpg'))  
     
     return q_table
 
-#%% 6. Reinforcement Learning with Deep Q-learning (WORK IN PROGRESS)
+#%% 6. Reinforcement Learning with Deep Q-learning
 
 class Net(torch.nn.Module):
-    'Create a Neural Network class to train and update the agent'
+    'Create a Neural Network class.'
     def __init__(self, state_dim, action_dim, hidden_dim=64, lr=0.005):
         super(Net, self).__init__()
         hidden_dim2 = int(hidden_dim/2)
@@ -1506,28 +1854,28 @@ class Net(torch.nn.Module):
         # self.criterion = torch.nn.SmoothL1Loss()
         
     def update(self, state, y):
-        'Update the weights of the network given a training sample.'
-        y_pred = self.model(torch.Tensor(state))
-        loss = self.criterion(y_pred, Variable(torch.Tensor(y)))
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        return loss
+            'Update the weights of the network given a training sample.'
+            y_pred = self.model(torch.Tensor(state))
+            loss = self.criterion(y_pred, Variable(torch.Tensor(y)))
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            return loss
         
     def validate(self, state, y):
-        'Calculate validation loss using current model weights'
-        with torch.no_grad():
-            y_pred = self.model(torch.Tensor(state))
-        loss = self.criterion(y_pred, Variable(torch.Tensor(y)))
-        return loss
+            'Calculate validation loss using current model weights'
+            with torch.no_grad():
+                y_pred = self.model(torch.Tensor(state))
+            loss = self.criterion(y_pred, Variable(torch.Tensor(y)))
+            return loss
             
     def predict(self, state):
-        'Compute Q values for all actions using the Neural Net.' 
-        with torch.no_grad():
-            return self.model(torch.Tensor(state))
+            'Compute Q values for all actions using the Neural Net.' 
+            with torch.no_grad():
+                return self.model(torch.Tensor(state))
 
 def train_agent(env,params,model,train_params,fp):
-    "perform Q-learning with the Neural Network approximator instead of Qtable"
+    "perform Q-learning"
     plt.ioff()
     # create folders to store outputs
     fp_batch = os.path.join(fp,'episodes')
@@ -1732,4 +2080,150 @@ def train_agent(env,params,model,train_params,fp):
     fig = env.fleet_status()
     fig.savefig(os.path.join(fp,'status_best.jpg'))
     
+    
     return model
+    
+
+#%% deprecated
+
+# def plot_reward_simul(reward_dist,env):
+#     "plot the distribution of rewards"
+#     N = reward_dist.shape[0]
+#     binwidth = 10
+#     total_rewards = np.sum(reward_dist,axis=1)
+#     colors = sns.color_palette('Set2',env.n_tail) 
+#     fig,ax = plt.subplots(1,2,figsize=[14,6],tight_layout=True,gridspec_kw={'width_ratios':[2,1]})
+#     ax[0].grid(which='major',ls=':',c='0.5'); ax[1].grid(which='major',ls=':',c='0.5');
+#     ax[0].set(xlabel='total episode reward',ylabel='count',title='Rewards distribution for %d runs'%N,)#xlim=[1125,1275])
+#     ax[1].set(xlabel='tail number',ylabel='median reward per episode',title='Reward per tail number')
+#     bins = np.arange(np.min(total_rewards),np.max(total_rewards)+binwidth,binwidth)-binwidth/2
+#     ax[0].hist(total_rewards,bins=bins,fc='C0',ec='k')
+#     ax[0].text(np.max(total_rewards),ax[0].get_ylim()[1]/2,
+#                'max %d'%np.max(total_rewards),ha='center',fontsize=12,
+#                bbox=dict(fc='none', ec='black', boxstyle='round,pad=.5'))
+#     ax[0].text(np.min(total_rewards),ax[0].get_ylim()[1]/2,
+#                'min %d'%np.min(total_rewards),ha='center',fontsize=12,
+#                bbox=dict(fc='none', ec='black', boxstyle='round,pad=.5'))
+#     ax[0].text(np.mean(total_rewards),ax[0].get_ylim()[1]*0.95,
+#                'mean %d'%np.mean(total_rewards),ha='center',fontsize=12,
+#                bbox=dict(fc='none', ec='black', boxstyle='round,pad=.5'))
+#     for i in range(reward_dist.shape[1]):
+#         errors = np.zeros((2,1))
+#         errors[0] = np.median(reward_dist[:,i])-np.percentile(reward_dist[:,i],10)
+#         errors[1] = np.percentile(reward_dist[:,i],90) - np.median(reward_dist[:,i])
+#         ax[1].bar(x=i,height=np.median(reward_dist[:,i]),yerr=np.array(errors),fc=colors[i],label='tail #%d'%(i+1),capsize=5,ec='k');
+#     ax[1].set(ylim=[np.min(reward_dist)*0.9,ax[1].get_ylim()[1]])
+#     twinx = ax[1].twinx()
+#     twinx.plot(env.C,'ko:',mfc='w',lw=0.75,label='C values')
+#     twinx.legend(loc='upper left')
+    
+#     return fig
+
+# def plot_mean_qvals(mean_qvals,env):
+#     "plot the evolution of the average q-value for each action during training"
+#     fig,ax = plt.subplots(1,2,figsize=(10,5),tight_layout=True,
+#                           gridspec_kw={'width_ratios':[4,1]})
+#     ax[0].grid(which='major',ls=':',c='k',lw=1)
+#     mean_qvals = np.array(mean_qvals)
+#     argmax = np.argmax(mean_qvals,axis=1)
+#     handles = []
+#     for k,key in enumerate(env.actions):
+#         ax[0].plot(mean_qvals[:,k],'-',c='C%d'%k)
+#         ax[1].bar(x=k,height=sum(argmax==k),fc=env.color_actions[k],ec='k')
+#         handles.append(mpatches.Patch(fc=env.color_actions[k],ec='k',label=key))
+#     ax[0].set(xlabel='model updates',ylabel='mean q-value')
+#     ax[1].set(ylabel='counts',xlabel='argmax action',xticks=np.arange(mean_qvals.shape[1]))
+#     ax[1].legend(handles=handles,loc='center left',fontsize=9,
+#                     handlelength=1,edgecolor='k',bbox_to_anchor=[1,0.5])
+#     return fig
+
+# def plot_qvals_boxplot(state_qval,rewards,env):
+#     # initialise figures
+#     fig,ax = plt.subplots(env.n_tail,1,figsize=(16,10),sharey=True,
+#                           sharex=True,gridspec_kw=dict(top=0.95,bottom=0.05,
+#                                                        left=0.08,right=0.95,
+#                                                        hspace=0.1))
+#     for i,tail in enumerate(list(state_qval.keys())):
+#         ax[i].grid(which='major',ls=':',c='k',lw=1)
+#         # read damage levels and convert from list to arrays
+#         states_all = state_qval[tail]['states']
+#         damage_levels = np.empty(len(states_all))
+#         qvals = np.empty([len(states_all),len(env.actions)])
+#         for k in range(len(states_all)):
+#             damage_levels[k] = states_all[k][int(tail)]
+#             qvals[k,:] = state_qval[tail]['qvals'][k]
+#         for l in range(1,env.dlevels):
+#             pos = l
+#             idx_damage = np.where(damage_levels == l)[0]
+#             for k,key in enumerate(env.actions):
+#                 ax[i].boxplot(qvals[idx_damage,k],positions=[pos+k/8],widths=[0.1],
+#                               showfliers=True,patch_artist=True,
+#                               boxprops=dict(facecolor='C'+str(k),color='C'+str(k),alpha=0.75),
+#                               medianprops=dict(color='C'+str(k),lw=1),
+#                               whiskerprops=dict(color='C'+str(k),lw=0.5),
+#                               capprops=dict(color='C'+str(k),lw=0.5),
+#                               flierprops=dict(color='C'+str(k), markeredgecolor='C'+str(k),
+#                                               marker='+',markersize=3),
+#                               labels=None)
+#             ax[i].set(ylabel='tail %s'%tail)
+#             if i == len(state_qval)-1:
+#                 ax[i].set(xlim=[0.5,env.dlevels+0.5],
+#                           xlabel='damage level',xticks=np.arange(1,env.dlevels),
+#                           xticklabels=[str(_) for _ in np.arange(1,env.dlevels)])  
+#     ax[0].set(title='Qvals - total reward = %d (%1.f%%)'%(np.nansum(rewards),np.mean(env.availability)))
+#     handles = []
+#     for k,key in enumerate(env.actions):
+#         handles.append(mpatches.Patch(fc='C%d'%k,ec='k',label=key))
+#     ax[0].legend(handles=handles,loc='upper right',fontsize=10,
+#               handlelength=1,edgecolor='k')
+#     return fig
+
+# def plot_policy(state_qval,rewards,env):
+#     # initialise figures
+#     fig,ax = plt.subplots(1,2,figsize=(16,7),tight_layout=True,
+#                           gridspec_kw={'width_ratios':[5,1]})
+#     ax[0].grid(which='major',ls=':',c='k',lw=1)
+#     ax[0].set(title='Preferred action per damage level - total reward = %d (%1.f%%)'%(np.nansum(rewards),np.mean(env.availability)),
+#               xlim=[0.5,env.dlevels+0.5],
+#            xlabel='damage level',xticks=np.arange(1,env.dlevels),
+#            ylabel='tail number',yticks=np.arange(env.n_tail))
+#     for tail in state_qval.keys():
+#         # read damage levels and  from list to arrays
+#         states_all = state_qval[tail]['states']
+#         damage_levels = np.empty(len(states_all))
+#         qvals = np.empty([len(states_all),len(env.actions)])
+#         for k in range(len(states_all)):
+#             damage_levels[k] = states_all[k][int(tail)]
+#             qvals[k,:] = state_qval[tail]['qvals'][k]
+#         # calculate average q-value for each action and each damage level
+#         qvals_per_level = np.empty([len(env.actions),env.dlevels-1])
+#         for k,key in enumerate(env.actions):
+#             qval_per_action = []
+#             for l in range(1,env.dlevels):
+#                 idx_damage = np.where(damage_levels == l)[0]
+#                 # if that state is explored by the policy
+#                 if len(idx_damage) > 0:
+#                     qval_per_action.append(np.mean(qvals[idx_damage,k]))
+#                 else: # otherwise put a nan (not explored)
+#                     qval_per_action.append(np.nan)
+#             qvals_per_level[k,:] = np.array(qval_per_action) 
+#         # for each state, plot action with the highest average q-value
+#         for l in range(1,env.dlevels):
+#             if not np.all(np.isnan(qvals_per_level[:,l-1])):    
+#                 action_max = np.argmax(qvals_per_level[:,l-1])
+#                 ax[0].plot(l,int(tail),'o',mfc='C%d'%action_max,mec='k',ms=16)   
+#     handles = []
+#     for k,key in enumerate(env.actions):
+#         handles.append(mpatches.Patch(fc='C%d'%k,ec='k',label=key))
+#     ax[0].legend(handles=handles,loc='center left',fontsize=14,
+#               handlelength=1,edgecolor='k',bbox_to_anchor=[1,0.5])
+#     ax[0].invert_yaxis()
+#     # plot c-values
+#     ax[1].grid(which='major',ls=':',c='k',lw=1)
+#     ax[1].barh(np.arange(env.n_tail),np.nansum(rewards,axis=0),0.5,fc='0.75',ec='k')
+#     ax[1].set(xlim=[0.95*np.nanmin(np.nansum(rewards,axis=0)),
+#                     1.05*np.nanmax(np.nansum(rewards,axis=0))])
+#     twinx = ax[1].twiny()
+#     twinx.plot(env.C,np.arange(env.n_tail),'ko-',mfc='w',ms=10)
+#     twinx.invert_yaxis()
+#     return fig

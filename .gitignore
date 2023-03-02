@@ -1,4 +1,7 @@
 *.pyc
 *checkpoint.ipynb
+*checkpoint.py
 *.jpg
 *.pkl
+/example_test_2tails
+/example_test_3tails
