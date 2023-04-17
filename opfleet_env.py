@@ -1719,11 +1719,11 @@ def coverage_qtable(q_table,env):
     
 #%% 5. Reinforcement Learning with Q-table
 
-def train_qtable(env,q_table,train_params,fp):
+def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
     "perform Q-learning to update look-up table"
     
     plt.ioff()
-
+    
     # nested function to read from the q-table
     def q(state, action=None):
         # only the damage levels go in the state
@@ -1742,10 +1742,6 @@ def train_qtable(env,q_table,train_params,fp):
             if np.isnan(qval): qval = 0
             return qval
     
-    # create folders to store outputs
-    fp_models = os.path.join(fp,'models')
-    if not os.path.exists(fp_models): os.makedirs(fp_models)
-    
     # read params dictionary
     n_episodes = train_params['n_episodes']
     gamma = train_params['gamma']
@@ -1760,8 +1756,12 @@ def train_qtable(env,q_table,train_params,fp):
     plt.close(fig)
     
     # start search
-    reward_per_episode = []
+    if reward_per_episode:
+        print('using loaded rewards')
+    else:
+        reward_per_episode = []
     count_ep = 0
+    best_reward = -np.inf
     for n in range(n_episodes):
         
         # print('\repisode %d/%d'%(n+1,n_episodes),end='')
@@ -1821,17 +1821,22 @@ def train_qtable(env,q_table,train_params,fp):
         count_ep += 1
         if not count_ep % step == 0: continue
         
-        # evaluate current model by running one episode
-        env.reset()
-        damage_ts, reward_ts, qvals = episode_qtable(q_table,env)
-        plt.ioff()
-        # append total reward
-        reward_per_episode.append(np.nansum(reward_ts))
-        
-        # plot episode
-        fig = plot_episode(damage_ts,reward_ts,env)
-        fig.savefig(os.path.join(fp,'episode_temp.jpg'))
-        plt.close(fig)
+        # evaluate current model by running M episodes and calculating the average reward
+        sum_rewards = 0
+        for k in range(train_params['repetitions']):
+            # start_time = time.time()
+            env.reset(True)
+            # initialise state
+            env.crack_lengths = np.random.uniform(env.a0*1000,env.amax*1000,env.n_tail)
+            damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+            env.state[:env.n_tail] = damage_levels
+            damage_ts, reward_ts, qvals = episode_qtable(q_table,env)    
+            # print("--- %.5f seconds ---" % (time.time() - start_time))
+            # print('qtable -> total rewards = %d'%np.nansum(reward_ts))
+            sum_rewards += np.nansum(reward_ts)
+        average_reward = sum_rewards/train_params['repetitions']
+        # append to time-series of reward
+        reward_per_episode.append(average_reward)
         
         # plot loss and reward time-series
         window = 50
@@ -1850,17 +1855,39 @@ def train_qtable(env,q_table,train_params,fp):
             ax.legend(loc='lower right')
         fig.savefig(os.path.join(fp,'loss_temp.jpg')) 
         plt.close(fig)
-    
-        # plot coverage
-        coverage_table, fig = coverage_qtable(q_table, env)
-        fig.savefig(os.path.join(fp,'coverage_temp.jpg'))
-        plt.close(fig)
         
-        # store Q-table
-        with open(os.path.join(fp_models,'qtable_%d.pkl'%n),'wb') as f:
-            pickle.dump(q_table,f) 
-            
-        print('\r%d - rew %d - cov %.1f%% - eps %.3f - alpha = %.3f'%(n+1,np.nansum(reward_ts),np.mean(list(coverage_table.values())),epsilon,alpha),end='')
+        # if it is an improvement, save the model
+        if average_reward > best_reward:
+            best_reward = average_reward
+            # store Q-table
+            with open(os.path.join(fp,'qtable_best.pkl'),'wb') as f:
+                pickle.dump(q_table,f) 
+            # plot episode
+            env.reset()
+            damage_ts, reward_ts, qvals = episode_qtable(q_table,env)
+            fig = plot_episode(damage_ts,reward_ts,env)
+            fig.savefig(os.path.join(fp,'episode_best.jpg'))
+            plt.close(fig)
+            # store rewards
+            train_stats = {'reward':reward_per_episode}
+            with open(os.path.join(fp,'train_stats.pkl'),'wb') as f:
+                pickle.dump(train_stats,f)
+            # plot coverage
+            coverage_table, fig = coverage_qtable(q_table, env)
+            fig.savefig(os.path.join(fp,'coverage_best.jpg'))
+            plt.close(fig)
+        # otherwise plot temp figures
+        else:
+            # plot episode
+            fig = plot_episode(damage_ts,reward_ts,env)
+            fig.savefig(os.path.join(fp,'episode_temp.jpg'))
+            plt.close(fig)
+            # plot coverage
+            coverage_table, fig = coverage_qtable(q_table, env)
+            fig.savefig(os.path.join(fp,'coverage_temp.jpg'))
+            plt.close(fig)
+
+        print('\r%d - rew %d (best %d) - cov %.1f%% - eps %.3f - alpha = %.3f'%(n+1,average_reward,best_reward,np.mean(list(coverage_table.values())),epsilon,alpha),end='')
 
         
     # store training stats from full RL search
@@ -1874,28 +1901,9 @@ def train_qtable(env,q_table,train_params,fp):
     with open(os.path.join(fp,'train_stats.pkl'),'wb') as f:
         pickle.dump(train_stats,f)
         
-    # store the final Qtable
-    with open(os.path.join(fp,'qtable_final.pkl'),'wb') as f:
+    # store the last Qtable (not best)
+    with open(os.path.join(fp,'qtable_last.pkl'),'wb') as f:
         pickle.dump(q_table,f)
-        
-    # load best Qtable
-    idx_max = (np.argmax(train_stats['reward'])+1)*step-1
-    with open(os.path.join(fp_models,'qtable_%d.pkl'%idx_max),'rb') as f:
-        q_table = pickle.load(f)
-    # save as best q_table
-    with open(os.path.join(fp,'qtable_best.pkl'),'wb') as f:
-        pickle.dump(q_table,f)
-    # evaluate current model by running one episode
-    env.reset()
-    damage_ts, reward_ts, qvals = episode_qtable(q_table,env)
-    print('qtable -> total rewards = %d'%np.nansum(reward_ts))
-    fig1 = env.fleet_status()
-    fig1.savefig(os.path.join(fp,'status_best.jpg'))
-    fig2 = plot_episode(damage_ts,reward_ts,env)
-    fig2.savefig(os.path.join(fp,'episode_best.jpg'))
-    # plot policy
-    # fig = plot_qvals(q_table, env, reward_ts)
-    # fig.savefig(os.path.join(fp,'ts_best.jpg'))  
     
     return q_table
 
