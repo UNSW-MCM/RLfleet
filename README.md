@@ -11,7 +11,8 @@ Q-learning is used to demonstrate the potential of RL to optimise this complex d
 Example Jupyter Notebooks:
 - [fleet_optimisation_Qtable_2aircraft.ipynb](./fleet_optimisation_Qtable_2aircraft.ipynb)
 - [fleet_optimisation_Qtable_3aircraft.ipynb](./fleet_optimisation_Qtable_3aircraft.ipynb)
+- [fleet_optimisation_Qtable_4aircraft.ipynb](./fleet_optimisation_Qtable_4aircraft.ipynb)
 
 All the functions, classes and methods are contained in the module [opfleet_env.py](./opfleet_env.py).
 
-The main limitation of this approach is that it cannot be applied to larger fleets as the state and action space increase exponentially and become intractable.
+The main limitation of this approach is that it cannot be applied to larger fleets as the state and action spaces increase exponentially and become intractable. Alternative representation of the action space using multi-agent RL are currently explored.
