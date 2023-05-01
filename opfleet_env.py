@@ -1760,6 +1760,7 @@ def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
         print('using loaded rewards')
     else:
         reward_per_episode = []
+    maint_per_episode = []
     count_ep = 0
     best_reward = -np.inf
     for n in range(n_episodes):
@@ -1823,6 +1824,7 @@ def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
         
         # evaluate current model by running M episodes and calculating the average reward
         sum_rewards = 0
+        average_maint = np.zeros(env.n_tail)
         for k in range(train_params['repetitions']):
             # start_time = time.time()
             env.reset(True)
@@ -1830,13 +1832,17 @@ def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
             env.crack_lengths = np.random.uniform(env.a0*1000,env.amax*1000,env.n_tail)
             damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
             env.state[:env.n_tail] = damage_levels
-            damage_ts, reward_ts, qvals = episode_qtable(q_table,env)    
+            damage_ts, reward_ts, qvals = episode_qtable(q_table,env)  
             # print("--- %.5f seconds ---" % (time.time() - start_time))
             # print('qtable -> total rewards = %d'%np.nansum(reward_ts))
             sum_rewards += np.nansum(reward_ts)
+            average_maint += np.array(env.n_prev_maintenance)
         average_reward = sum_rewards/train_params['repetitions']
+        average_maint = average_maint/train_params['repetitions']
+
         # append to time-series of reward
         reward_per_episode.append(average_reward)
+        maint_per_episode.append(average_maint)
         
         # plot loss and reward time-series
         window = 50
@@ -1853,6 +1859,8 @@ def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
             ma = np.convolve(reward_per_episode, np.ones(window), 'valid') / window	
             ax.plot(indices[window-1:],ma,'r-',lw=2,label='%d-moving average'%window)	
             ax.legend(loc='lower right')
+        ax2 = ax.twinx()
+        ax2.plot(indices,np.mean(np.array(maint_per_episode),axis=1),'C1-o',ms=3)
         fig.savefig(os.path.join(fp,'loss_temp.jpg')) 
         plt.close(fig)
         
@@ -1869,7 +1877,7 @@ def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
             fig.savefig(os.path.join(fp,'episode_best.jpg'))
             plt.close(fig)
             # store rewards
-            train_stats = {'reward':reward_per_episode}
+            train_stats = {'reward':reward_per_episode,'maint':np.array(maint_per_episode)}
             with open(os.path.join(fp,'train_stats.pkl'),'wb') as f:
                 pickle.dump(train_stats,f)
             # plot coverage
