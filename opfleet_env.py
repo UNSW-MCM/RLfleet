@@ -669,7 +669,7 @@ class Env(gym.Env):
                                                  len(self.missions),replace=False)
                 tot_missions = 0
                 for k in mission_order[:-1]:
-                    n = np.random.randint(1,params['missions_per_day']/2+1)
+                    n = np.random.randint(1,np.ceil(params['missions_per_day']/2)+1)
                     if (tot_missions + n) <= params['missions_per_day']:
                         tot_missions += n
                         missions_per_date[i,k] = n
@@ -1690,6 +1690,8 @@ def coverage_qtable(q_table,env):
     # print('Average coverage %.1f%%'%mean_coverage)
     # make figure
     fig,axs = plt.subplots(1,env.n_tail,figsize=[17,5],tight_layout=True) 
+    if env.n_tail == 1:
+        axs = [axs]
     for i,ax in enumerate(axs): 
         ax.grid(which='major',ls=':',c='0.5',lw=0.5)
         ax.set(title='Tail #%d'%(i+1), ylim=[0,100],xlabel='damage levels')
