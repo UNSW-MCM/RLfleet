@@ -2095,3 +2095,8 @@ def train_DQNagent(env,params,model,train_params,fp):
     torch.save(model,os.path.join(fp,'model_last.pkl'))
     
     return model
+
+#%% 7. Multi-agent reinforcement learning (IQL with Q-table)
+
+def train_IQL(env,params,train_params,fp):
+    return []
