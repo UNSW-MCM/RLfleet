@@ -1552,7 +1552,93 @@ def plot_agent(model):
         ax[k,1].hist(layer_biases.flatten(),ec='k',align='left')
         ax[k,1].set_title('Biases ( %d x 1 )'%len(weights[2*k+1])) 
     return fig
-    
+
+def plot_search_rewards(reward_per_episode,maint_per_episode,step,window=50):
+    "plot total reward per episode and number of maintenances per episode during the policy search"
+    fig,ax = plt.subplots(2,1,figsize=(10,5),tight_layout=True)
+    ax[0].grid(which='major',ls=':',c='k',lw=1)
+    indices = (np.arange(len(reward_per_episode))+1)*step-1	
+    idx_max = indices[np.argmax(reward_per_episode)]
+    ax[0].plot(indices,reward_per_episode,'C0o-',ms=3)
+    ax[0].set(title='Reward per episode - max = %d - current %d'%(np.nanmax(reward_per_episode),
+                                                               reward_per_episode[-1]),
+              ylabel='total reward')
+    ax[0].plot(idx_max,np.nanmax(reward_per_episode),'ko',mfc='none')
+    ax[0].tick_params(axis='y', colors='C0')
+    ax[0].yaxis.label.set_color('C0')
+    if len(reward_per_episode) > window:
+        ma = np.convolve(reward_per_episode, np.ones(window), 'valid') / window	
+        ax[0].plot(indices[window-1:],ma,'r-',lw=2,label='%d-moving average'%window)	
+        ax[0].legend(loc='lower right')
+    ax[1].grid(which='major',ls=':',c='k',lw=1)
+    ax[1].plot(indices,np.mean(np.array(maint_per_episode),axis=1),'C1-o',ms=3)
+    ax[1].set(ylabel='av # maintenances',xlabel='episodes')
+    ax[1].tick_params(axis='y', colors='C1')
+    ax[1].yaxis.label.set_color('C1')
+    return fig
+
+def plot_search_rewards_DQN(reward_per_episode,maint_per_episode,loss_per_fit,step,window=50):
+    "same as plot_search_rewards() but includes the model loss for each update"
+    fig,ax = plt.subplots(3,1,figsize=(10,7),tight_layout=True)
+    ax[0].grid(which='major',ls=':',c='k',lw=1)
+    indices = (np.arange(len(reward_per_episode))+1)*step-1	
+    idx_max = indices[np.argmax(reward_per_episode)]
+    ax[0].plot(indices,reward_per_episode,'C0o-',ms=3)
+    ax[0].set(title='Reward per episode - max = %d - current %d'%(np.nanmax(reward_per_episode),
+                                                               reward_per_episode[-1]),
+              ylabel='total reward')
+    ax[0].plot(idx_max,np.nanmax(reward_per_episode),'ko',mfc='none')
+    ax[0].tick_params(axis='y', colors='C0')
+    ax[0].yaxis.label.set_color('C0')
+    if len(reward_per_episode) > window:
+        ma = np.convolve(reward_per_episode, np.ones(window), 'valid') / window	
+        ax[0].plot(indices[window-1:],ma,'r-',lw=2,label='%d-moving average'%window)	
+        ax[0].legend(loc='lower right')
+    ax[1].grid(which='major',ls=':',c='k',lw=1)
+    ax[1].plot(indices,np.mean(np.array(maint_per_episode),axis=1),'C1-o',ms=3)
+    ax[1].set(ylabel='av # maintenances',xlabel='episodes')
+    ax[1].tick_params(axis='y', colors='C1')
+    ax[1].yaxis.label.set_color('C1')
+    ax[2].grid(which='major',ls=':',c='k',lw=1)
+    ax[2].plot(np.arange(len(loss_per_fit)),loss_per_fit,'C2-')
+    ax[2].set(xlabel='model updates',ylabel='MSE loss')
+    return fig
+
+def plot_reward_distributions(reward_all, binwidth=10):
+    "plot the distributions of rewards for each strategy"
+    fig,axs=plt.subplots(2,1,figsize=[12,7],tight_layout=True,sharex=True); 
+    ax = axs[0]
+    ax.grid(which='major',ls=':',c='0.5',lw=0.5)
+    # plot each distribution and average reward
+    for i,key in enumerate(reward_all.keys()):
+        if key in ['random']: continue
+        rewards = np.sum(reward_all[key],axis=1)
+        bins = np.arange(np.min(rewards)-50,np.max(rewards)+50+binwidth,binwidth)-binwidth/2
+        ax.hist(rewards,bins=bins,fc='C%d'%i,ec='k',label='%s - mean = %d'%(key,np.mean(rewards)),alpha=0.5)
+        ax.axvline(np.mean(rewards),ls='--',lw=2,c='C%d'%i) 
+    ax.legend(loc='upper left'); 
+    ax.set(title=' Reward distribution over %d runs'%(len(rewards)),
+           xlabel='total rewards',ylabel='counts');
+    ax.text(0,1.07,'a)',ha='left',va='top',transform=ax.transAxes,)
+    ax.xaxis.set_tick_params(which='both', labelbottom=True)
+    # plot 5th percentile
+    ax = axs[1]
+    ax.grid(which='major',ls=':',c='0.5',lw=0.5)
+    # plot each distribution
+    for i,key in enumerate(reward_all.keys()):
+        if key == 'random': continue
+        rewards = np.sum(reward_all[key],axis=1)
+        prc = np.percentile(rewards,5)
+        rewards_prc = rewards[rewards <= prc]
+        bins = np.arange(np.min(rewards_prc)-50,np.max(rewards_prc)+50+binwidth,binwidth)-binwidth/2
+        ax.hist(rewards_prc,bins=bins,fc='C%d'%i,ec='k',label='%s - 5th prc = %d'%(key,prc),alpha=0.5)
+        ax.axvline(prc,ls='--',lw=2,c='C%d'%i) 
+    ax.legend(loc='upper left'); 
+    ax.set(title='5th percentile of the distribution (worst case scenarios)',
+           xlabel='total rewards',ylabel='counts')
+    ax.text(0,1.07,'b)',ha='left',va='top',transform=ax.transAxes,)
+    return fig
+
 #%% 5. Reinforcement Learning with Q-table (look-up table)
 
 def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
@@ -1692,24 +1778,7 @@ def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
         maint_per_episode.append(average_maint)
         
         # plot total reward per episode and number of maintenances per episode
-        fig,ax = plt.subplots(1,1,figsize=(10,5),tight_layout=True)
-        ax.grid(which='major',ls=':',c='k',lw=1)
-        indices = (np.arange(len(reward_per_episode))+1)*step-1	
-        idx_max = indices[np.argmax(reward_per_episode)]
-        ax.plot(indices,reward_per_episode,'C0o-',ms=3)
-        ax.set(title='Reward per episode - max = %d - current %d'%(np.nanmax(reward_per_episode),
-                                                                   reward_per_episode[-1]),
-               xlabel='episodes',ylabel='total reward')
-        ax.plot(idx_max,np.nanmax(reward_per_episode),'ko',mfc='none')
-        ax.tick_params(axis='y', colors='C0')
-        if len(reward_per_episode) > window:
-            ma = np.convolve(reward_per_episode, np.ones(window), 'valid') / window	
-            ax.plot(indices[window-1:],ma,'r-',lw=2,label='%d-moving average'%window)	
-            ax.legend(loc='lower right')
-        ax2 = ax.twinx()
-        ax2.plot(indices,np.mean(np.array(maint_per_episode),axis=1),'C1-o',ms=3)
-        ax2.set(ylabel='av # maintenances')
-        ax2.tick_params(axis='y', colors='C1')
+        fig = plot_search_rewards(reward_per_episode,maint_per_episode,step,window)
         fig.savefig(os.path.join(fp,'rewards_temp.jpg')) 
         plt.close(fig)
         
@@ -1746,16 +1815,10 @@ def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
 
         print('\r%d - rew %d (best %d) - cov %.1f%% - eps %.3f - alpha = %.3f'%(n+1,average_reward,best_reward,np.mean(list(coverage_table.values())),epsilon,alpha),end='')
 
-        
     # store training stats from full RL search
-    fig,ax = plt.subplots(1,1,figsize=(10,8),tight_layout=True)
-    ax.grid(which='major',ls=':',c='k',lw=1)
-    ax.plot(np.arange(len(reward_per_episode)),reward_per_episode,'C0o-',ms=4)
-    ax.set(title='total reward per episode %d (max = %d)'%(reward_per_episode[-1],np.nanmax(reward_per_episode)),
-           xlabel='episodes')
-    ax.plot(np.nanargmax(reward_per_episode),np.nanmax(reward_per_episode),'ko',mfc='none')
-    fig.savefig(os.path.join(fp,'rewards_last.jpg')) 
+    fig = plot_search_rewards(reward_per_episode,maint_per_episode,step,window)
 
+    # store search stats
     train_stats = {'reward':reward_per_episode,'maint':np.array(maint_per_episode)}
     with open(os.path.join(fp,'train_stats.pkl'),'wb') as f:
         pickle.dump(train_stats,f)
@@ -1886,9 +1949,7 @@ def train_DQNagent(env,params,model,train_params,fp):
     env = Env(params)
     # loop through episodes
     for n in range(n_episodes):
-        
-        print('\repisode %d/%d'%(n+1,n_episodes),end='')
-        
+                
         # initialise counters
         total_rew = 0
         done = False  
@@ -2008,28 +2069,7 @@ def train_DQNagent(env,params,model,train_params,fp):
         maint_per_episode.append(average_maint)
         
         # plot loss/reward time-series
-        fig,axs = plt.subplots(2,1,figsize=(10,5),tight_layout=True)
-        # plot reward and maintenance
-        ax = axs[0]
-        ax.grid(which='major',ls=':',c='k',lw=1)
-        indices = (np.arange(len(reward_per_episode))+1)*step-1	
-        idx_max = indices[np.argmax(reward_per_episode)]
-        ax.plot(indices,reward_per_episode,'C0o-',ms=3)
-        ax.set(title='Reward per episode - max = %d - current %d'%(np.nanmax(reward_per_episode),
-                                                                   reward_per_episode[-1]),
-               xlabel='episodes',ylabel='total reward')
-        ax.plot(idx_max,np.nanmax(reward_per_episode),'ko',mfc='none')
-        if len(reward_per_episode) > window:
-            ma = np.convolve(reward_per_episode, np.ones(window), 'valid') / window	
-            ax.plot(indices[window-1:],ma,'r-',lw=2,label='%d-moving average'%window)	
-            ax.legend(loc='lower right')
-        ax2 = ax.twinx()
-        ax2.plot(indices,np.mean(np.array(maint_per_episode),axis=1),'C1-o',ms=3)
-        # plot loss function
-        ax = axs[1]
-        ax.grid(which='major',ls=':',c='k',lw=1)
-        ax.plot(np.arange(len(loss_per_fit)),loss_per_fit,'C0-')
-        ax.set(xlabel='model updates',ylabel='MSE loss')        
+        fig = plot_search_rewards_DQN(reward_per_episode,maint_per_episode,loss_per_fit,step,window)       
         fig.savefig(os.path.join(fp,'rewards_and_loss_temp.jpg')) 
         plt.close(fig)
         
@@ -2060,31 +2100,8 @@ def train_DQNagent(env,params,model,train_params,fp):
         print('\r%d - rew %d (best %d) - - eps %.3f - alpha = %.3f'%(n+1,average_reward,best_reward,epsilon,alpha),end='')
     
     # store training stats from full RL search
-    fig,axs = plt.subplots(2,1,figsize=(10,5),tight_layout=True)
-    # plot reward and maintenance
-    ax = axs[0]
-    ax.grid(which='major',ls=':',c='k',lw=1)
-    indices = (np.arange(len(reward_per_episode))+1)*step-1	
-    idx_max = indices[np.argmax(reward_per_episode)]
-    ax.plot(indices,reward_per_episode,'C0o-',ms=3)
-    ax.set(title='Reward per episode - max = %d - current %d'%(np.nanmax(reward_per_episode),
-                                                               reward_per_episode[-1]),
-           xlabel='episodes',ylabel='total reward')
-    ax.plot(idx_max,np.nanmax(reward_per_episode),'ko',mfc='none')
-    if len(reward_per_episode) > window:
-        ma = np.convolve(reward_per_episode, np.ones(window), 'valid') / window	
-        ax.plot(indices[window-1:],ma,'r-',lw=2,label='%d-moving average'%window)	
-        ax.legend(loc='lower right')
-    ax2 = ax.twinx()
-    ax2.plot(indices,np.mean(np.array(maint_per_episode),axis=1),'C1-o',ms=3)
-    # plot loss function
-    ax = axs[1]
-    ax.grid(which='major',ls=':',c='k',lw=1)
-    ax.plot(np.arange(len(loss_per_fit)),loss_per_fit,'C0-')
-    ax.set(xlabel='model updates',ylabel='MSE loss')        
-    fig.savefig(os.path.join(fp,'rewards_and_loss_last.jpg')) 
-    plt.close(fig)
-    
+    fig = plot_search_rewards_DQN(reward_per_episode,maint_per_episode,loss_per_fit,step,window)       
+         
     # store training stats
     train_stats = {'reward':reward_per_episode,'maint':np.array(maint_per_episode),
                    'loss_per_fit':loss_per_fit}
@@ -2100,3 +2117,147 @@ def train_DQNagent(env,params,model,train_params,fp):
 
 def train_IQL(env,params,train_params,fp):
     return []
+
+#%% 8. Policy evaluation
+
+def optimise_baselines(env,repetitions=10):
+    """
+    Find the optimal threshold for each of the 3 baseline policies by trial-and-error.
+    The 3 baseline strategies are:
+        - on-condition maintenance
+        - force-life management
+        - equal-stress policy
+    """
+    
+    repetitions = 10 # over how many repetitions to calculate the average reward
+    # initialise variables
+    total_rewards_oncond = []
+    total_rewards_forcelife = []
+    total_rewards_equalstress = []
+    # loop through each damage level
+    maint_levels = np.arange(1,env.dlevels+1,dtype=int)
+    for i,level in enumerate(maint_levels):
+        print('\r running maintenance at level %d/%d'%(i,len(maint_levels)),end='')
+        # optimise on-condition maintenance
+        rewards = 0
+        for k in range(repetitions):
+            env.reset(True)
+            env.crack_lengths = np.random.uniform(env.a0*1000,env.amax*1000,env.n_tail)
+            damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+            env.state[:env.n_tail] = damage_levels
+            damage_ts, reward_ts = episode_on_condition(env,maint_level=level)
+            rewards += np.nansum(reward_ts)
+        total_rewards_oncond.append(rewards/repetitions)
+        # optimise force-life management
+        rewards = 0
+        for k in range(repetitions):
+            env.reset(True)
+            env.crack_lengths = np.random.uniform(env.a0*1000,env.amax*1000,env.n_tail)
+            damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+            env.state[:env.n_tail] = damage_levels
+            damage_ts, reward_ts = episode_force_life(env,maint_level=level)
+            rewards += np.nansum(reward_ts)
+        total_rewards_forcelife.append(rewards/repetitions)
+        # optimise equal-stress management
+        rewards = 0
+        for k in range(repetitions):
+            env.reset(True)
+            env.crack_lengths = np.random.uniform(env.a0*1000,env.amax*1000,env.n_tail)
+            damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+            env.state[:env.n_tail] = damage_levels
+            damage_ts, reward_ts = episode_equal_stress(env,maint_level=level)
+            rewards += np.nansum(reward_ts)
+        total_rewards_equalstress.append(rewards/repetitions) 
+    # plot optimisation results
+    fig,ax = plt.subplots(1,1,figsize=[10,5],tight_layout=True); 
+    ax.grid(which='major',ls=':',c='0.5',lw=0.5)
+    ax.plot(maint_levels,total_rewards_oncond,'-o',label='on-condition')
+    ax.plot(maint_levels,total_rewards_forcelife,'-o',label='force-life')
+    ax.plot(maint_levels,total_rewards_equalstress,'-o',label='equalstress')
+    ax.set(xlabel='maintenance level',ylabel='average reward')
+    ax.plot(maint_levels[np.argmax(total_rewards_oncond)],np.max(total_rewards_oncond),'C0o',mfc='None',ms=15)
+    ax.plot(maint_levels[np.argmax(total_rewards_forcelife)],np.max(total_rewards_forcelife),'C1o',mfc='None',ms=15)
+    ax.plot(maint_levels[np.argmax(total_rewards_equalstress)],np.max(total_rewards_equalstress),'C2o',mfc='None',ms=15)
+    ax.legend(loc='upper left')
+    # choose best maintenance level for each policy
+    maint_level_oncond = maint_levels[np.argmax(total_rewards_oncond)]
+    maint_level_forcelife = maint_levels[np.argmax(total_rewards_forcelife)]
+    maint_level_equalstress = maint_levels[np.argmax(total_rewards_equalstress)]
+    print('\nOptimum maintenance level for on-condition policy: damage level of %d'%maint_level_oncond)
+    print('Optimum maintenance level for force-life policy: damage level of %d'%maint_level_forcelife)
+    print('Optimum maintenance level for equal-stress policy: damage level of %d'%maint_level_equalstress)    
+    return maint_level_oncond, maint_level_forcelife, maint_level_equalstress, fig
+
+def run_episodes_baselines(env,maint_levels,N=1000):
+    "run N simulations with each baseline policy with random initial states to obtain a distribution"
+    level_oncond = maint_levels['level_oncond']
+    level_forcelife = maint_levels['level_forcelife']
+    level_equalstress = maint_levels['level_equalstress']
+    # initialise variables
+    reward_on_condition = np.empty((N,env.n_tail))
+    reward_force_life = np.empty((N,env.n_tail))
+    reward_equal_stress = np.empty((N,env.n_tail))
+    # randomly sample the initial crack lengths from a uniform distribution
+    crack_lengths = np.empty((N,env.n_tail))
+    for k in range(env.n_tail):
+        crack_lengths[:,k] = np.random.uniform(env.a0*1000,env.amax*1000,N)
+    # run sinmuls
+    for i in range(N):
+        print('\r running episode %d/%d'%(i+1,N),end='')
+        damage_levels = np.searchsorted(env.dintervals,crack_lengths[i,:],side='right')
+        # on-condition maintenance
+        env.reset(True)
+        env.state[:env.n_tail] = copy.deepcopy(damage_levels)
+        damage_ts, reward_ts = episode_on_condition(env,maint_level=level_oncond)
+        reward_on_condition[i,:] = np.nansum(reward_ts,axis=0)
+        # force-life management
+        env.reset(True)
+        env.state[:env.n_tail] = copy.deepcopy(damage_levels)
+        damage_ts, reward_ts = episode_force_life(env,maint_level=level_forcelife)
+        reward_force_life[i,:] = np.nansum(reward_ts,axis=0)
+        # equal-stress policy
+        env.reset(True)
+        env.state[:env.n_tail] = copy.deepcopy(damage_levels)
+        damage_ts, reward_ts = episode_equal_stress(env,maint_level=level_equalstress)
+        reward_equal_stress[i,:] = np.nansum(reward_ts,axis=0)
+    # combine into dictionaries
+    reward_all = {'on_condition':reward_on_condition,
+                  'force_life':reward_force_life,
+                  'equal_stress':reward_equal_stress}
+    return reward_all
+    
+def run_episodes_qtable(env,q_table,N=1000):
+    "run N simulations with the qtable with random initial states to obtain a distribution"
+    # initialise variables
+    reward_RL = np.empty((N,env.n_tail))
+    crack_lengths = np.empty((N,env.n_tail))
+    for k in range(env.n_tail):
+        crack_lengths[:,k] = np.random.uniform(env.a0*1000,env.amax*1000,N)
+    # run sinmuls
+    for i in range(N):
+        print('\r running episode %d/%d'%(i+1,N),end='')
+        env.reset(True)
+        env.crack_lengths = copy.deepcopy(crack_lengths[i,:])
+        damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+        env.state[:env.n_tail] = damage_levels
+        damage_ts, reward_ts, qvals = episode_qtable(q_table,env)
+        reward_RL[i,:] = np.nansum(reward_ts,axis=0)
+    return reward_RL
+    
+def run_episodes_model(env,model,N=1000):
+    "run N simulations with the NN model with random initial states to obtain a distribution"
+    # initialise variables
+    reward_RL = np.empty((N,env.n_tail))
+    crack_lengths = np.empty((N,env.n_tail))
+    for k in range(env.n_tail):
+        crack_lengths[:,k] = np.random.uniform(env.a0*1000,env.amax*1000,N)
+    # run sinmuls
+    for i in range(N):
+        print('\r running episode %d/%d'%(i+1,N),end='')
+        env.reset(True)
+        env.crack_lengths = copy.deepcopy(crack_lengths[i,:])
+        damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+        env.state[:env.n_tail] = damage_levels
+        damage_ts, reward_ts, qvals = episode_model(model,env)
+        reward_RL[i,:] = np.nansum(reward_ts,axis=0)
+    return reward_RL
