@@ -265,6 +265,8 @@ class Env(gym.Env):
         self.create_mission_profile(params,verbose)
         mission_keys = ['missions_per_day','mission_composition','date_start','date_end']
         self.mission_params = {key: params[key] for key in mission_keys}
+        if 'custom_missions' in params.keys():
+            self.mission_params['custom_missions'] = params['custom_missions']
 
         # States (damage status, maintenance status, prescribed missions,selection)
         # initialise vector
