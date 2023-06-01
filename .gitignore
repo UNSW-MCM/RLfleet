@@ -3,6 +3,7 @@
 *checkpoint.py
 *.jpg
 *.pkl
+*.txt
 /example_test_2tails
 /example_test_3tails
 /example_test_4tails

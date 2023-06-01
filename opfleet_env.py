@@ -1515,7 +1515,7 @@ def plot_qvals_multiagent(q_tables,env,reward_ts):
     "plot the qvalues as a function of damage level for each tail in a multi-agent setting"
     
     n_agents = len(q_tables)
-    fig,axs = plt.subplots(n_agents,1,figsize=[10.,7.23],tight_layout=True,)
+    fig,axs = plt.subplots(n_agents,1,figsize=[10.,7.23],tight_layout=True,sharex=True)
     for ax in axs: ax.grid(which='major',ls=':',c='k',lw=1)
     axs[0].set(title='Policy map - total reward = %d'%(np.nansum(reward_ts)),
            xlabel='tail damage level',xticks=np.arange(1,env.dlevels),
@@ -1643,7 +1643,7 @@ def plot_reward_distributions(reward_all, binwidth=10):
 
 #%% 5. Reinforcement Learning with Q-table (look-up table)
 
-def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
+def train_qtable(env,q_table,train_params,fp):
     """
     Perform policy search according to Q-learning algorithm (using train_params dictionary). 
     The search is done according to the epsilon-greedy strategy (epsilon and alpha decaying). 
@@ -1686,15 +1686,9 @@ def train_qtable(env,q_table,train_params,fp,reward_per_episode=[]):
     fig, epsilons, alphas = plot_eps_alpha(train_params)
     plt.close(fig)
     
-    # if search was stopped in between, load existing rewards and continue from 
-    # where it stopped
-    if reward_per_episode:
-        print('using loaded rewards')
-    else:
-        reward_per_episode = []
-        
     # start search
     window = 50 # for rolling average over total reward time-series
+    reward_per_episode = []
     maint_per_episode = []
     count_ep = 0
     best_reward = -np.inf
@@ -2117,8 +2111,197 @@ def train_DQNagent(env,params,model,train_params,fp):
 
 #%% 7. Multi-agent reinforcement learning (IQL with Q-table)
 
-def train_IQL(env,params,train_params,fp):
-    return []
+def train_IQL(env,q_tables,train_params,fp):
+    
+    # number of agents
+    n_agents = env.n_tail
+    
+    # nested function to read from the q-table
+    def q(i, state, action=None):
+        # only the damage levels go in the state
+        state = str(state[i])
+        # if state is not present in the table, add a vector of nans
+        if state not in q_tables[i]:
+            q_tables[i][state] = np.nan*np.ones(len(env.action_list))
+        # if action is not specified return all q-values for that state
+        if action is None:
+            return q_tables[i][state]
+        # otherwise return q-value for specified action
+        else:
+            idx_action = np.where([np.all(action == _) for _ in env.action_list])[0][0]
+            qval = q_tables[i][state][idx_action]
+            # if q-value is a nan, return 0 instead
+            if np.isnan(qval): qval = 0
+            return qval
+    
+    # read params dictionary
+    n_episodes = train_params['n_episodes']
+    gamma = train_params['gamma']
+    crack_lengths = train_params['crack_lengths']
+    step = train_params['saving_step']
+    if 'n_decisions' in train_params.keys():
+        n_decisions = train_params['n_decisions']
+    else:
+        n_decisions = len(env.dates)
+    # search parameters
+    fig, epsilons, alphas = plot_eps_alpha(train_params)
+    plt.close(fig)
+    
+    # start search
+    window = 50 # for rolling average over total reward time-series
+    reward_per_episode = []
+    maint_per_episode = []
+    count_ep = 0
+    best_reward = -np.inf
+    for n in range(n_episodes):
+        
+        # print('\repisode %d/%d'%(n+1,n_episodes),end='')
+        
+        total_reward = 0
+        done = False  
+        
+        # select search parameters
+        epsilon = epsilons[n]
+        alpha = alphas[n]
+        
+        # initial conditions
+        env.reset(regenerate_missions=True)
+        # random initial conditions
+        env.crack_lengths = copy.deepcopy(crack_lengths[n,:])
+        damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+        env.state[:env.n_tail] = damage_levels    
+        
+        # run episode
+        while not done:
+            
+            # get current state
+            current_state = copy.deepcopy(env.state)
+            damage, status, missions_todo = env.decode_state(env.state)
+            # get possible actions
+            idx_possible = get_possible_actions(current_state,env)
+            actions_possible = env.possible_actions[idx_possible,:]
+            
+            # choose random action for each agent
+            actions = np.empty(n_agents,dtype=int)
+            for i in np.random.choice(np.arange(n_agents),n_agents,replace=False):
+                actions_agent = np.unique(actions_possible[:,i])
+                idx_agent = np.where([_ in actions_agent for _ in env.action_list])[0]
+                # draw random number
+                r = np.random.rand()
+                # either explore a new action
+                if r < epsilon:
+                    action = np.random.choice(actions_agent,1,replace=False)[0]
+                # or exploit best known action
+                else:
+                    if str(current_state[i]) in q_tables[i]:
+                        predicted = q(i,current_state)
+                        predicted = predicted[idx_agent]
+                        if not np.all(np.isnan(predicted)):
+                            action = env.action_list[idx_agent][np.nanargmax(predicted)]
+                        else:
+                            action = np.random.choice(actions_agent,1,replace=False)[0]
+                    else:
+                        action = np.random.choice(actions_agent,1,replace=False)[0]
+                actions[i] = action
+                # adjust possible actions to make sure no illegal combinations are created
+                idx_possible = idx_possible[actions_possible[:,i] == action]
+                actions_possible = env.possible_actions[idx_possible,:]
+                
+            # execute action and calculate reward and new state
+            new_state, reward, done = env.step(actions)
+            total_reward += reward
+            
+            # Bellman's update for each agent
+            for i in range(n_agents):
+                action = actions[i]
+                idx_action = np.where(env.action_list == action)[0][0]
+                reward_agent = env.temp_reward[env.timestep-1][i]
+                if env.timestep < len(env.dates) and not np.all(np.isnan(q(i,new_state))):
+                    max_future_q = reward_agent + gamma*np.nanmax(q(i,new_state))
+                else:
+                    max_future_q = reward_agent
+                q(i,current_state)[idx_action] = q(i,current_state, action) + alpha*(max_future_q - q(i,current_state, action))
+                
+            # stop the episode after n_decisions
+            if env.timestep >= n_decisions: 
+                done = True
+                
+        # print metrics for user
+        count_ep += 1
+        if not count_ep % step == 0: continue
+        
+        # evaluate current model by running M episodes and calculating the average reward
+        sum_rewards = 0
+        average_maint = np.zeros(env.n_tail)
+        for k in range(train_params['repetitions']):
+            # start_time = time.time()
+            env.reset(True)
+            # initialise state
+            env.crack_lengths = np.random.uniform(env.a0*1000,env.amax*1000,env.n_tail)
+            damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+            env.state[:env.n_tail] = damage_levels
+            damage_ts, reward_ts, qvals = episode_qtable_multiagent(q_tables,env)  
+            # print("--- %.5f seconds ---" % (time.time() - start_time))
+            # print('qtable -> total rewards = %d'%np.nansum(reward_ts))
+            sum_rewards += np.nansum(reward_ts)
+            average_maint += np.array(env.n_prev_maintenance)
+        average_reward = sum_rewards/train_params['repetitions']
+        average_maint = average_maint/train_params['repetitions']
+    
+        # append to time-series of reward
+        reward_per_episode.append(average_reward)
+        maint_per_episode.append(average_maint)
+        
+        # plot total reward per episode and number of maintenances per episode
+        fig = plot_search_rewards(reward_per_episode,maint_per_episode,step,window)
+        fig.savefig(os.path.join(fp,'rewards_temp.jpg')) 
+        plt.close(fig)
+
+        # if it is an improvement, save the model
+        if average_reward > best_reward:
+            best_reward = average_reward
+            # store Q-table
+            with open(os.path.join(fp,'qtable_best.pkl'),'wb') as f:
+                pickle.dump(q_tables,f) 
+            # plot episode
+            env.reset()
+            damage_ts, reward_ts, qvals = episode_qtable_multiagent(q_tables,env)  
+            fig = plot_episode(damage_ts,reward_ts,env)
+            fig.savefig(os.path.join(fp,'episode_best.jpg'))
+            plt.close(fig)
+            # store rewards
+            train_stats = {'reward':reward_per_episode,'maint':np.array(maint_per_episode)}
+            with open(os.path.join(fp,'train_stats.pkl'),'wb') as f:
+                pickle.dump(train_stats,f)
+            # plot q-table
+            fig = plot_qvals_multiagent(q_tables,env,reward_ts)
+            fig.savefig(os.path.join(fp,'qtable_best.jpg'))
+            plt.close(fig)
+        # otherwise plot temp figures
+        else:
+            # plot episode
+            fig = plot_episode(damage_ts,reward_ts,env)
+            fig.savefig(os.path.join(fp,'episode_temp.jpg'))
+            plt.close(fig)
+            # plot q-table
+            fig = plot_qvals_multiagent(q_tables,env,reward_ts)
+            fig.savefig(os.path.join(fp,'qtable_temp.jpg'))
+            plt.close(fig)
+    
+        print('\r%d - rew %d (best %d) - eps %.3f - alpha = %.3f'%(n+1,average_reward,best_reward,epsilon,alpha),end='')
+    
+    # store training stats from full RL search
+    fig = plot_search_rewards(reward_per_episode,maint_per_episode,step,window)
+    
+    train_stats = {'reward':reward_per_episode}
+    with open(os.path.join(fp,'train_stats.pkl'),'wb') as f:
+        pickle.dump(train_stats,f)
+        
+    # store the last Qtable (not best)
+    with open(os.path.join(fp,'qtable_last.pkl'),'wb') as f:
+        pickle.dump(q_tables,f)    
+            
+    return q_tables
 
 #%% 8. Policy evaluation
 
@@ -2246,6 +2429,24 @@ def run_episodes_qtable(env,q_table,N=1000):
         reward_RL[i,:] = np.nansum(reward_ts,axis=0)
     return reward_RL
     
+def run_episodes_qtable_multiagent(env,q_tables,N=1000):
+    "run N simulations with the qtable with random initial states to obtain a distribution"
+    # initialise variables
+    reward_RL = np.empty((N,env.n_tail))
+    crack_lengths = np.empty((N,env.n_tail))
+    for k in range(env.n_tail):
+        crack_lengths[:,k] = np.random.uniform(env.a0*1000,env.amax*1000,N)
+    # run sinmuls
+    for i in range(N):
+        print('\r running episode %d/%d'%(i+1,N),end='')
+        env.reset(True)
+        env.crack_lengths = copy.deepcopy(crack_lengths[i,:])
+        damage_levels = np.searchsorted(env.dintervals,env.crack_lengths,side='right')
+        env.state[:env.n_tail] = damage_levels
+        damage_ts, reward_ts, qvals = episode_qtable_multiagent(q_tables,env)
+        reward_RL[i,:] = np.nansum(reward_ts,axis=0)
+    return reward_RL
+
 def run_episodes_model(env,model,N=1000):
     "run N simulations with the NN model with random initial states to obtain a distribution"
     # initialise variables
