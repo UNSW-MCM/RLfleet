@@ -1606,7 +1606,7 @@ def plot_search_rewards_DQN(reward_per_episode,maint_per_episode,loss_per_fit,st
     ax[2].set(xlabel='model updates',ylabel='MSE loss')
     return fig
 
-def plot_reward_distributions(reward_all, binwidth=10):
+def plot_reward_distributions(reward_all, binwidth=10, colors=[]):
     "plot the distributions of rewards for each strategy"
     fig,axs=plt.subplots(2,1,figsize=[12,7],tight_layout=True,sharex=True); 
     ax = axs[0]
@@ -1616,8 +1616,12 @@ def plot_reward_distributions(reward_all, binwidth=10):
         if key in ['random']: continue
         rewards = np.sum(reward_all[key],axis=1)
         bins = np.arange(np.min(rewards)-50,np.max(rewards)+50+binwidth,binwidth)-binwidth/2
-        ax.hist(rewards,bins=bins,fc='C%d'%i,ec='k',label='%s - mean = %d'%(key,np.mean(rewards)),alpha=0.5)
-        ax.axvline(np.mean(rewards),ls='--',lw=2,c='C%d'%i) 
+        if len(colors) > 0:
+            color = colors[i]
+        else:
+            color = 'C%d'%i
+        ax.hist(rewards,bins=bins,fc=color,ec='k',label='%s - mean = %d'%(key,np.mean(rewards)),alpha=0.5)
+        ax.axvline(np.mean(rewards),ls='--',lw=2,c=color) 
     ax.legend(loc='upper left'); 
     ax.set(title=' Reward distribution over %d runs'%(len(rewards)),
            xlabel='total rewards',ylabel='counts');
@@ -1633,8 +1637,12 @@ def plot_reward_distributions(reward_all, binwidth=10):
         prc = np.percentile(rewards,5)
         rewards_prc = rewards[rewards <= prc]
         bins = np.arange(np.min(rewards_prc)-50,np.max(rewards_prc)+50+binwidth,binwidth)-binwidth/2
-        ax.hist(rewards_prc,bins=bins,fc='C%d'%i,ec='k',label='%s - 5th prc = %d'%(key,prc),alpha=0.5)
-        ax.axvline(prc,ls='--',lw=2,c='C%d'%i) 
+        if len(colors) > 0:
+            color = colors[i]
+        else:
+            color = 'C%d'%i
+        ax.hist(rewards_prc,bins=bins,fc=color,ec='k',label='%s - 5th prc = %d'%(key,prc),alpha=0.5)
+        ax.axvline(prc,ls='--',lw=2,c=color) 
     ax.legend(loc='upper left'); 
     ax.set(title='5th percentile of the distribution (worst case scenarios)',
            xlabel='total rewards',ylabel='counts')
